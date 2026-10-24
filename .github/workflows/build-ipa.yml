@@ -1,0 +1,59 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [claude/ios-app, main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -version
+          xcodebuild \
+            -project AnotherIT.xcodeproj \
+            -scheme AnotherIT \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | grep -vE '^\s*$' | tail -n 300
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/AnotherIT.app Payload/
+          zip -qry AnotherIT.ipa Payload
+          ls -la AnotherIT.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AnotherIT-ipa
+          path: AnotherIT.ipa
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Другое IT — сборка ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          files: AnotherIT.ipa
+          body: |
+            Неподписанная IPA для установки через AltStore / Sideloadly / TrollStore.
+            Коммит: ${{ github.sha }}
