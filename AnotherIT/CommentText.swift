@@ -141,7 +141,7 @@ struct MessageView: View {
     let blocks: [MessageBlock]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .paragraph(let text):
@@ -149,16 +149,22 @@ struct MessageView: View {
                 case .heading(let text):
                     Text(text).font(.headline)
                 case .quote(let text):
-                    HStack(spacing: 8) {
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(Color.accentColor.opacity(0.6))
+                    HStack(spacing: 10) {
+                        Capsule()
+                            .fill(Color.accentColor)
                             .frame(width: 3)
                         Text(text)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
+                            .padding(.vertical, 2)
                     }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .fixedSize(horizontal: false, vertical: true)
                 case .listItem(let marker, let text):
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(marker).foregroundStyle(.secondary)
                         Text(text)
                     }
@@ -166,15 +172,15 @@ struct MessageView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         Text(code)
                             .font(.system(.footnote, design: .monospaced))
-                            .padding(8)
+                            .padding(10)
                     }
-                    .background(Color.secondary.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
         }
-        .font(.callout)
-        .textSelection(.enabled)
+        .font(.body)
+        .lineSpacing(2)
+        .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
     }
 }

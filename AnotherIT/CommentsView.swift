@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct FlatComment: Identifiable {
     let comment: Comment
@@ -9,14 +10,43 @@ struct FlatComment: Identifiable {
 
     var id: Int { comment.id }
     var authorName: String { CommentsModel.displayName(comment) }
+    var score: Int { (comment.likesCount ?? 0) - (comment.dislikesCount ?? 0) }
+}
+
+/// A top-level comment with all of its replies in thread order.
+struct CommentThread: Identifiable {
+    let root: FlatComment
+    let replies: [FlatComment]
+
+    var id: Int { root.id }
+}
+
+enum CommentSort: String, CaseIterable, Identifiable {
+    case oldest = "Старые"
+    case newest = "Новые"
+    case popular = "Популярные"
+
+    var id: Self { self }
 }
 
 @MainActor
 final class CommentsModel: ObservableObject {
-    @Published private(set) var all: [FlatComment] = []
+    @Published private(set) var threads: [CommentThread] = []
     @Published private(set) var loaded = false
     @Published var collapsed: Set<Int> = []
     @Published var error: String?
+    @Published var sort: CommentSort = .oldest {
+        didSet {
+            guard sort != oldValue else { return }
+            // In "popular" mode the point is to skim top-level comments,
+            // so threads start collapsed.
+            if sort == .popular {
+                collapseAll()
+            } else if oldValue == .popular {
+                collapsed = []
+            }
+        }
+    }
 
     let path: String
 
@@ -24,12 +54,34 @@ final class CommentsModel: ObservableObject {
         self.path = path
     }
 
-    /// Comments in thread order, without the replies of collapsed comments.
-    var visible: [FlatComment] {
-        guard !collapsed.isEmpty else { return all }
+    var totalCount: Int {
+        threads.reduce(0) { $0 + 1 + $1.replies.count }
+    }
+
+    var sortedThreads: [CommentThread] {
+        switch sort {
+        case .oldest:
+            return threads
+        case .newest:
+            return threads.reversed()
+        case .popular:
+            return threads.enumerated().sorted { a, b in
+                let l = a.element.root, r = b.element.root
+                if l.score != r.score { return l.score > r.score }
+                let ll = l.comment.likesCount ?? 0, rl = r.comment.likesCount ?? 0
+                if ll != rl { return ll > rl }
+                return a.offset < b.offset
+            }.map(\.element)
+        }
+    }
+
+    /// Replies of a thread, without the replies of collapsed comments.
+    func visibleReplies(of thread: CommentThread) -> [FlatComment] {
+        if collapsed.contains(thread.id) { return [] }
+        guard !collapsed.isEmpty else { return thread.replies }
         var result: [FlatComment] = []
         var skipDeeperThan: Int?
-        for item in all {
+        for item in thread.replies {
             if let limit = skipDeeperThan {
                 if item.depth > limit { continue }
                 skipDeeperThan = nil
@@ -43,7 +95,8 @@ final class CommentsModel: ObservableObject {
     func load() async {
         do {
             let tree = try await APIClient.shared.comments(path: path)
-            all = await Task.detached(priority: .userInitiated) { CommentsModel.flatten(tree) }.value
+            threads = await Task.detached(priority: .userInitiated) { CommentsModel.makeThreads(tree) }.value
+            if sort == .popular { collapseAll() }
             loaded = true
             error = nil
         } catch {
@@ -56,19 +109,28 @@ final class CommentsModel: ObservableObject {
         if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
     }
 
+    func collapseAll() {
+        collapsed = Set(threads.filter { !$0.replies.isEmpty }.map(\.id))
+    }
+
     /// Expands every collapsed ancestor so the comment becomes visible.
     func reveal(_ id: Int) -> Bool {
-        guard let index = all.firstIndex(where: { $0.id == id }) else { return false }
-        var depth = all[index].depth
-        var i = index
-        while depth > 0, i > 0 {
-            i -= 1
-            if all[i].depth < depth {
-                collapsed.remove(all[i].id)
-                depth = all[i].depth
+        for thread in threads {
+            if thread.id == id { return true }
+            guard let index = thread.replies.firstIndex(where: { $0.id == id }) else { continue }
+            collapsed.remove(thread.id)
+            var depth = thread.replies[index].depth
+            var i = index
+            while depth > 1, i > 0 {
+                i -= 1
+                if thread.replies[i].depth < depth {
+                    collapsed.remove(thread.replies[i].id)
+                    depth = thread.replies[i].depth
+                }
             }
+            return true
         }
-        return true
+        return false
     }
 
     nonisolated static func displayName(_ comment: Comment) -> String {
@@ -76,16 +138,15 @@ final class CommentsModel: ObservableObject {
         return "Аноним"
     }
 
-    nonisolated private static func flatten(_ tree: [Comment]) -> [FlatComment] {
-        var result: [FlatComment] = []
-        func walk(_ comments: [Comment], depth: Int, parentName: String?) -> Int {
+    nonisolated private static func makeThreads(_ tree: [Comment]) -> [CommentThread] {
+        func flatten(_ comments: [Comment], depth: Int, parentName: String?, into result: inout [FlatComment]) -> Int {
             var count = 0
             for comment in comments {
                 let index = result.count
                 result.append(FlatComment(comment: comment, depth: depth, parentName: parentName,
                                           descendants: 0, blocks: []))
-                let children = walk(comment.children ?? [], depth: depth + 1,
-                                    parentName: displayName(comment))
+                let children = flatten(comment.children ?? [], depth: depth + 1,
+                                       parentName: displayName(comment), into: &result)
                 result[index] = FlatComment(comment: comment, depth: depth, parentName: parentName,
                                             descendants: children,
                                             blocks: CommentMarkdown.blocks(from: comment.message ?? ""))
@@ -93,13 +154,20 @@ final class CommentsModel: ObservableObject {
             }
             return count
         }
-        _ = walk(tree, depth: 0, parentName: nil)
-        return result
+
+        return tree.map { root in
+            var replies: [FlatComment] = []
+            let count = flatten(root.children ?? [], depth: 1, parentName: displayName(root), into: &replies)
+            let rootItem = FlatComment(comment: root, depth: 0, parentName: nil, descendants: count,
+                                       blocks: CommentMarkdown.blocks(from: root.message ?? ""))
+            return CommentThread(root: rootItem, replies: replies)
+        }
     }
 }
 
 struct CommentsView: View {
     let title: String
+    let path: String
     @StateObject private var model: CommentsModel
     @EnvironmentObject private var router: Router
     @State private var highlighted: Int?
@@ -107,6 +175,7 @@ struct CommentsView: View {
 
     init(path: String, title: String) {
         self.title = title
+        self.path = path
         _model = StateObject(wrappedValue: CommentsModel(path: path))
     }
 
@@ -114,7 +183,7 @@ struct CommentsView: View {
         ScrollViewReader { proxy in
             Group {
                 if model.loaded {
-                    list(proxy: proxy)
+                    list
                 } else if let error = model.error {
                     ErrorView(message: error) {
                         Task { await model.load() }
@@ -134,14 +203,18 @@ struct CommentsView: View {
         .navigationTitle("Комментарии")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if model.loaded, !model.all.isEmpty {
+            if model.loaded, model.threads.contains(where: { !$0.replies.isEmpty }) {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
-                        Button("Свернуть все ветки") {
-                            model.collapsed = Set(model.all.filter { $0.depth == 0 && $0.descendants > 0 }.map(\.id))
+                        Button {
+                            withAnimation { model.collapseAll() }
+                        } label: {
+                            Label("Свернуть все ветки", systemImage: "rectangle.compress.vertical")
                         }
-                        Button("Развернуть все") {
-                            model.collapsed = []
+                        Button {
+                            withAnimation { model.collapsed = [] }
+                        } label: {
+                            Label("Развернуть все", systemImage: "rectangle.expand.vertical")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -157,39 +230,94 @@ struct CommentsView: View {
         }
     }
 
-    @ViewBuilder
-    private func list(proxy: ScrollViewProxy) -> some View {
+    private var list: some View {
         List {
             Section {
-                Text(title)
-                    .font(.headline)
-                    .listRowSeparator(.hidden)
-                Text(countText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.title3.weight(.bold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(countText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 8, trailing: 4))
+
+                Picker("Сортировка", selection: $model.sort.animation()) {
+                    ForEach(CommentSort.allCases) { sort in
+                        Text(sort.rawValue).tag(sort)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             }
 
-            if model.all.isEmpty {
-                Text("Комментариев пока нет")
-                    .foregroundStyle(.secondary)
+            if model.threads.isEmpty {
+                Section {
+                    Text("Комментариев пока нет")
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            ForEach(model.visible) { item in
-                CommentRow(item: item,
-                           isCollapsed: model.collapsed.contains(item.id),
-                           isHighlighted: highlighted == item.id,
-                           onToggle: { withAnimation(.easeInOut(duration: 0.2)) { model.toggle(item.id) } },
-                           onImage: { viewerImage = ViewerImage(url: $0) })
-                    .id(item.id)
-                    .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 16))
+            ForEach(model.sortedThreads) { thread in
+                Section {
+                    row(thread.root)
+                    ForEach(model.visibleReplies(of: thread)) { reply in
+                        row(reply)
+                    }
+                    if !thread.replies.isEmpty {
+                        threadToggle(thread)
+                    }
+                }
             }
         }
-        .listStyle(.plain)
+        .listStyle(.insetGrouped)
+        .environment(\.defaultMinListRowHeight, 44)
         .refreshable { await model.load() }
     }
 
+    private func row(_ item: FlatComment) -> some View {
+        CommentRow(item: item,
+                   isCollapsed: model.collapsed.contains(item.id),
+                   commentURL: commentURL(item.id),
+                   onToggle: { withAnimation(.easeInOut(duration: 0.25)) { model.toggle(item.id) } },
+                   onImage: { viewerImage = ViewerImage(url: $0) })
+            .id(item.id)
+            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+            .listRowBackground(highlighted == item.id ? Color.accentColor.opacity(0.15) : nil)
+    }
+
+    /// Full-width row at the bottom of a thread card: the main way to fold
+    /// or unfold a whole thread.
+    private func threadToggle(_ thread: CommentThread) -> some View {
+        let isCollapsed = model.collapsed.contains(thread.id)
+        return Button {
+            withAnimation(.easeInOut(duration: 0.25)) { model.toggle(thread.id) }
+        } label: {
+            HStack {
+                Text(isCollapsed ? "Показать ответы (\(thread.replies.count))" : "Скрыть ответы")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .foregroundColor(.accentColor)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func commentURL(_ id: Int) -> URL {
+        var components = URLComponents(url: SiteLinks.absolute(path), resolvingAgainstBaseURL: false)
+        components?.fragment = "comment-\(id)"
+        return components?.url ?? SiteLinks.absolute(path)
+    }
+
     private var countText: String {
-        let n = model.all.count
+        let n = model.totalCount
         let mod10 = n % 10, mod100 = n % 100
         let word: String
         if mod10 == 1 && mod100 != 11 {
@@ -219,39 +347,49 @@ struct CommentsView: View {
 struct CommentRow: View {
     let item: FlatComment
     let isCollapsed: Bool
-    let isHighlighted: Bool
+    let commentURL: URL
     let onToggle: () -> Void
     let onImage: (URL) -> Void
 
-    private static let maxIndent = 6
+    private static let maxIndent = 4
+    private static let indentStep: CGFloat = 14
+    private static let threadColors: [Color] = [.blue, .green, .orange, .purple, .pink, .teal]
+
     private var comment: Comment { item.comment }
+    private var isReply: Bool { item.depth > 0 }
+    private var visualDepth: Int { min(item.depth, Self.maxIndent) }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            ForEach(0..<min(item.depth, Self.maxIndent), id: \.self) { _ in
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.25))
-                    .frame(width: 1)
-                    .padding(.trailing, 9)
+            if isReply {
+                Color.clear
+                    .frame(width: CGFloat(visualDepth - 1) * Self.indentStep)
+                Capsule()
+                    .fill(Self.threadColors[(item.depth - 1) % Self.threadColors.count].opacity(0.6))
+                    .frame(width: 2)
+                    .padding(.trailing, 10)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                header
+            HStack(alignment: .top, spacing: 10) {
+                AvatarView(name: item.authorName,
+                           seed: comment.ipHash ?? item.authorName,
+                           isAnonymous: comment.name?.isEmpty ?? true,
+                           isBot: comment.isBot == true,
+                           size: isReply ? 28 : 34)
 
-                if item.depth > Self.maxIndent, let parent = item.parentName {
-                    Label(parent, systemImage: "arrowshape.turn.up.left")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                VStack(alignment: .leading, spacing: 8) {
+                    header
 
-                if isCollapsed {
-                    Text("Ветка свёрнута · ответов: \(item.descendants)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
+                    if item.depth > Self.maxIndent, let parent = item.parentName {
+                        Label("ответ \(parent)", systemImage: "arrowshape.turn.up.left.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
                     if comment.hidden == true {
                         Text(comment.message ?? "Комментарий скрыт")
-                            .font(.callout.italic())
+                            .font(.subheadline.italic())
                             .foregroundStyle(.secondary)
                     } else {
                         MessageView(blocks: item.blocks)
@@ -265,57 +403,76 @@ struct CommentRow: View {
                 }
             }
         }
-        .padding(.vertical, 2)
-        .listRowBackground(isHighlighted ? Color.accentColor.opacity(0.12) : Color.clear)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in
+            isReply ? CGFloat(visualDepth - 1) * Self.indentStep + 12 : 0
+        }
+        .contextMenu {
+            if let message = comment.message, !message.isEmpty {
+                Button {
+                    UIPasteboard.general.string = message
+                } label: {
+                    Label("Скопировать текст", systemImage: "doc.on.doc")
+                }
+            }
+            ShareLink(item: commentURL) {
+                Label("Поделиться ссылкой", systemImage: "square.and.arrow.up")
+            }
+            if isReply, item.descendants > 0 {
+                Button(action: onToggle) {
+                    Label(isCollapsed ? "Развернуть ветку" : "Свернуть ветку",
+                          systemImage: isCollapsed ? "chevron.down" : "chevron.up")
+                }
+            }
+        }
     }
 
     private var header: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(item.authorName)
                 .font(.subheadline.weight(.semibold))
-                .foregroundColor(comment.isBot == true ? .accentColor : .primary)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
             if comment.isBot == true {
-                Text("Бот")
-                    .font(.caption2.weight(.semibold))
+                Text("БОТ")
+                    .font(.caption2.weight(.bold))
+                    .foregroundColor(.white)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
-                    .background(Color.accentColor.opacity(0.15))
-                    .clipShape(Capsule())
+                    .background(Color.accentColor, in: Capsule())
             }
-            if let hash = comment.ipHash, !hash.isEmpty {
-                Text("#\(hash)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-            }
-            Spacer(minLength: 4)
+            Spacer(minLength: 8)
             if let date = comment.createdAt {
-                Text(DateParsing.displayWithTime.string(from: date))
-                    .font(.caption)
+                Text(DateParsing.relative(date))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if item.descendants > 0 { onToggle() }
         }
     }
 
     private var footer: some View {
-        HStack(spacing: 14) {
-            Label("\(comment.likesCount ?? 0)", systemImage: "hand.thumbsup")
-            Label("\(comment.dislikesCount ?? 0)", systemImage: "hand.thumbsdown")
-            Spacer()
-            if item.descendants > 0 {
+        HStack(spacing: 8) {
+            VotePill(likes: comment.likesCount ?? 0, dislikes: comment.dislikesCount ?? 0)
+            Spacer(minLength: 8)
+            // Nested branches fold here; whole threads fold from the card's bottom row.
+            if isReply, item.descendants > 0 {
                 Button(action: onToggle) {
-                    Label("Свернуть (\(item.descendants))", systemImage: "chevron.up")
+                    HStack(spacing: 4) {
+                        Text(isCollapsed ? "Ответы (\(item.descendants))" : "Свернуть")
+                        Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundColor(.accentColor)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
+                .padding(.vertical, -6)
             }
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.top, 2)
     }
 
     private func imageStrip(_ images: [CommentImage]) -> some View {
@@ -330,17 +487,112 @@ struct CommentRow: View {
                                 if let img = phase.image {
                                     img.resizable().scaledToFill()
                                 } else {
-                                    Color.secondary.opacity(0.12)
+                                    Color(.tertiarySystemFill)
                                 }
                             }
-                            .frame(width: 120, height: 120)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .frame(width: 140, height: 140)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
                         .buttonStyle(.borderless)
                     }
                 }
             }
         }
+    }
+}
+
+struct VotePill: View {
+    let likes: Int
+    let dislikes: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                Image(systemName: likes > 0 ? "hand.thumbsup.fill" : "hand.thumbsup")
+                Text("\(likes)")
+            }
+            .foregroundColor(likes > 0 ? Color(.systemGreen) : Color(.secondaryLabel))
+
+            Rectangle()
+                .fill(Color(.separator))
+                .frame(width: 1, height: 12)
+
+            HStack(spacing: 4) {
+                Image(systemName: dislikes > 0 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                Text("\(dislikes)")
+            }
+            .foregroundColor(dislikes > 0 ? Color(.systemRed) : Color(.secondaryLabel))
+        }
+        .font(.footnote.weight(.semibold))
+        .monospacedDigit()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color(.tertiarySystemFill), in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Нравится: \(likes), не нравится: \(dislikes)")
+    }
+}
+
+struct AvatarView: View {
+    let name: String
+    let seed: String
+    let isAnonymous: Bool
+    let isBot: Bool
+    let size: CGFloat
+
+    private static let palette: [Color] = [
+        .blue, .green, .orange, .purple, .pink, .teal, .indigo, .mint, .red, .cyan, .brown,
+    ]
+
+    private var color: Color {
+        if isBot { return .accentColor }
+        // djb2: stable across launches, unlike Hasher.
+        var hash: UInt64 = 5381
+        for byte in seed.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
+        return Self.palette[Int(hash % UInt64(Self.palette.count))]
+    }
+
+    var body: some View {
+        ZStack {
+            Circle().fill(color.gradient)
+            if isBot {
+                Image(systemName: "sparkles")
+                    .font(.system(size: size * 0.45, weight: .semibold))
+            } else if isAnonymous {
+                Image(systemName: "person.fill")
+                    .font(.system(size: size * 0.45, weight: .semibold))
+            } else {
+                Text(String(name.prefix(1)).uppercased())
+                    .font(.system(size: size * 0.45, weight: .semibold, design: .rounded))
+            }
+        }
+        .foregroundColor(.white)
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+extension DateParsing {
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.locale = Locale(identifier: "ru_RU")
+        f.unitsStyle = .full
+        return f
+    }()
+
+    private static let shortDate: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ru_RU")
+        f.dateFormat = "d MMM yyyy"
+        return f
+    }()
+
+    /// "5 минут назад" for the last week, a short date after that.
+    static func relative(_ date: Date) -> String {
+        let age = Date().timeIntervalSince(date)
+        if age < 60 { return "только что" }
+        if age < 7 * 24 * 3600 { return relativeFormatter.localizedString(for: date, relativeTo: Date()) }
+        return shortDate.string(from: date)
     }
 }
 
