@@ -358,6 +358,7 @@ struct CommentRow: View {
     private var comment: Comment { item.comment }
     private var isReply: Bool { item.depth > 0 }
     private var visualDepth: Int { min(item.depth, Self.maxIndent) }
+    private var isAnonymous: Bool { comment.name?.trimmingCharacters(in: .whitespaces).isEmpty ?? true }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -370,37 +371,29 @@ struct CommentRow: View {
                     .padding(.trailing, 10)
             }
 
-            HStack(alignment: .top, spacing: 10) {
-                AvatarView(name: item.authorName,
-                           seed: comment.ipHash ?? item.authorName,
-                           isAnonymous: comment.name?.isEmpty ?? true,
-                           isBot: comment.isBot == true,
-                           size: isReply ? 28 : 34)
+            VStack(alignment: .leading, spacing: 8) {
+                header
 
-                VStack(alignment: .leading, spacing: 8) {
-                    header
-
-                    if item.depth > Self.maxIndent, let parent = item.parentName {
-                        Label("ответ \(parent)", systemImage: "arrowshape.turn.up.left.fill")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    if comment.hidden == true {
-                        Text(comment.message ?? "Комментарий скрыт")
-                            .font(.subheadline.italic())
-                            .foregroundStyle(.secondary)
-                    } else {
-                        MessageView(blocks: item.blocks)
-                    }
-
-                    if let images = comment.images, !images.isEmpty {
-                        imageStrip(images)
-                    }
-
-                    footer
+                if item.depth > Self.maxIndent, let parent = item.parentName {
+                    Label("ответ \(parent)", systemImage: "arrowshape.turn.up.left.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
+
+                if comment.hidden == true {
+                    Text(comment.message ?? "Комментарий скрыт")
+                        .font(.subheadline.italic())
+                        .foregroundStyle(.secondary)
+                } else {
+                    MessageView(blocks: item.blocks)
+                }
+
+                if let images = comment.images, !images.isEmpty {
+                    imageStrip(images)
+                }
+
+                footer
             }
         }
         .alignmentGuide(.listRowSeparatorLeading) { _ in
@@ -430,8 +423,14 @@ struct CommentRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(item.authorName)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundColor(AuthorColor.color(for: comment))
                 .lineLimit(1)
+            // Anonymous authors are told apart by their IP hash.
+            if isAnonymous, let hash = comment.ipHash, !hash.isEmpty {
+                Text(hash)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
             if comment.isBot == true {
                 Text("БОТ")
                     .font(.caption2.weight(.bold))
@@ -533,42 +532,21 @@ struct VotePill: View {
     }
 }
 
-struct AvatarView: View {
-    let name: String
-    let seed: String
-    let isAnonymous: Bool
-    let isBot: Bool
-    let size: CGFloat
-
+/// A stable per-author color for nicknames, derived from the IP hash so the
+/// same person keeps the same color across threads.
+enum AuthorColor {
     private static let palette: [Color] = [
-        .blue, .green, .orange, .purple, .pink, .teal, .indigo, .mint, .red, .cyan, .brown,
+        .blue, .green, .orange, .purple, .pink, .teal, .indigo, .red, .brown,
     ]
 
-    private var color: Color {
-        if isBot { return .accentColor }
+    static func color(for comment: Comment) -> Color {
+        if comment.isBot == true { return .accentColor }
+        let seed = comment.ipHash ?? comment.name ?? ""
+        guard !seed.isEmpty else { return .primary }
         // djb2: stable across launches, unlike Hasher.
         var hash: UInt64 = 5381
         for byte in seed.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
-        return Self.palette[Int(hash % UInt64(Self.palette.count))]
-    }
-
-    var body: some View {
-        ZStack {
-            Circle().fill(color.gradient)
-            if isBot {
-                Image(systemName: "sparkles")
-                    .font(.system(size: size * 0.45, weight: .semibold))
-            } else if isAnonymous {
-                Image(systemName: "person.fill")
-                    .font(.system(size: size * 0.45, weight: .semibold))
-            } else {
-                Text(String(name.prefix(1)).uppercased())
-                    .font(.system(size: size * 0.45, weight: .semibold, design: .rounded))
-            }
-        }
-        .foregroundColor(.white)
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
+        return palette[Int(hash % UInt64(palette.count))]
     }
 }
 
