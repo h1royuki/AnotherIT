@@ -404,7 +404,6 @@ struct CommentRow: View {
                 imageStrip(images)
             }
 
-            reactions
             actions
         }
         .padding(.leading, CGFloat(line.level) * CommentLayout.indent)
@@ -479,22 +478,10 @@ struct CommentRow: View {
         }
     }
 
-    @ViewBuilder
-    private var reactions: some View {
-        let likes = comment.likesCount ?? 0
-        let dislikes = comment.dislikesCount ?? 0
-        if likes > 0 || dislikes > 0 {
-            HStack(spacing: 8) {
-                if likes > 0 { ReactionPill(emoji: "👍", count: likes) }
-                if dislikes > 0 { ReactionPill(emoji: "👎", count: dislikes) }
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Нравится: \(likes), не нравится: \(dislikes)")
-        }
-    }
-
     private var actions: some View {
         HStack(spacing: 20) {
+            RatingPill(likes: comment.likesCount ?? 0, dislikes: comment.dislikesCount ?? 0)
+
             if item.descendants > 0 {
                 Button(action: onToggle) {
                     Text(isCollapsed ? Plural.replies(item.descendants) : "Свернуть")
@@ -611,21 +598,45 @@ struct ThreadLines: Shape {
     }
 }
 
-struct ReactionPill: View {
-    let emoji: String
-    let count: Int
+/// Net rating (likes minus dislikes): green when positive, red when negative.
+/// Tapping it shows the breakdown.
+struct RatingPill: View {
+    let likes: Int
+    let dislikes: Int
+
+    private var score: Int { likes - dislikes }
+
+    private var text: String {
+        if score > 0 { return "+\(score)" }
+        if score < 0 { return "\u{2212}\(-score)" }
+        return "0"
+    }
+
+    private var color: Color {
+        if score > 0 { return Color(.systemGreen) }
+        if score < 0 { return Color(.systemRed) }
+        return Color(.secondaryLabel)
+    }
 
     var body: some View {
-        HStack(spacing: 6) {
-            Text(emoji)
-            Text("\(count)")
+        Menu {
+            Button {} label: {
+                Label("Нравится: \(likes)", systemImage: "hand.thumbsup")
+            }
+            Button {} label: {
+                Label("Не нравится: \(dislikes)", systemImage: "hand.thumbsdown")
+            }
+        } label: {
+            Text(text)
+                .font(.body.weight(.semibold))
                 .monospacedDigit()
-                .foregroundStyle(.primary)
+                .foregroundColor(color)
+                .padding(.horizontal, 12)
+                .frame(minWidth: 44, minHeight: 32)
+                .background(color.opacity(score == 0 ? 0.12 : 0.15), in: Capsule())
+                .contentShape(Capsule())
         }
-        .font(.body)
-        .padding(.horizontal, 12)
-        .frame(height: 34)
-        .background(Color(.tertiarySystemFill), in: Capsule())
+        .accessibilityLabel("Рейтинг \(text): нравится \(likes), не нравится \(dislikes)")
     }
 }
 
