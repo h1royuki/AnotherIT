@@ -422,7 +422,8 @@ struct CommentRow: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            AvatarView(comment: comment, name: item.authorName, isAnonymous: isAnonymous,
+            AvatarView(name: item.authorName, color: AuthorColor.color(for: comment),
+                       isAnonymous: isAnonymous, isBot: comment.isBot == true,
                        size: CommentLayout.avatarSize)
             nameAndMeta
         }
@@ -636,9 +637,12 @@ enum AuthorColor {
     ]
 
     static func color(for comment: Comment) -> Color {
-        if comment.isBot == true { return .accentColor }
-        let seed = comment.ipHash ?? comment.name ?? ""
-        guard !seed.isEmpty else { return .primary }
+        color(seed: comment.ipHash ?? comment.name ?? "", isBot: comment.isBot == true)
+    }
+
+    static func color(seed: String, isBot: Bool) -> Color {
+        if isBot { return .accentColor }
+        guard !seed.isEmpty else { return .gray }
         // djb2: stable across launches, unlike Hasher.
         var hash: UInt64 = 5381
         for byte in seed.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
@@ -647,16 +651,17 @@ enum AuthorColor {
 }
 
 struct AvatarView: View {
-    let comment: Comment
     let name: String
+    let color: Color
     let isAnonymous: Bool
+    let isBot: Bool
     let size: CGFloat
 
     var body: some View {
         ZStack {
-            Circle().fill(AuthorColor.color(for: comment).gradient)
+            Circle().fill(color.gradient)
             Group {
-                if comment.isBot == true {
+                if isBot {
                     Image(systemName: "sparkles")
                 } else if isAnonymous {
                     Image(systemName: "person.fill")
@@ -680,19 +685,13 @@ extension DateParsing {
         return f
     }()
 
-    private static let shortDate: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ru_RU")
-        f.dateFormat = "d MMM yyyy"
-        return f
-    }()
 
     /// "5 минут назад" for the last week, a short date after that.
     static func relative(_ date: Date) -> String {
         let age = Date().timeIntervalSince(date)
         if age < 60 { return "только что" }
         if age < 7 * 24 * 3600 { return relativeFormatter.localizedString(for: date, relativeTo: Date()) }
-        return shortDate.string(from: date)
+        return short(date)
     }
 }
 

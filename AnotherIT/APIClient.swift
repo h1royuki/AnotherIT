@@ -135,6 +135,26 @@ enum DateParsing {
         return f
     }()
 
+    private static let dayMonth: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ru_RU")
+        f.dateFormat = "d MMM"
+        return f
+    }()
+
+    private static let dayMonthYear: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ru_RU")
+        f.dateFormat = "d MMM yyyy"
+        return f
+    }()
+
+    /// "23 окт." for this year, "23 окт. 2024" for older dates.
+    static func short(_ date: Date) -> String {
+        let sameYear = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
+        return (sameYear ? dayMonth : dayMonthYear).string(from: date)
+    }
+
     static let displayWithTime: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ru_RU")
