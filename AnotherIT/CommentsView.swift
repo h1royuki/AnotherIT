@@ -22,11 +22,31 @@ struct CommentThread: Identifiable {
 }
 
 enum CommentSort: String, CaseIterable, Identifiable {
-    case oldest = "Старые"
-    case newest = "Новые"
+    case oldest = "Сначала старые"
+    case newest = "Сначала новые"
     case popular = "Популярные"
 
     var id: Self { self }
+
+    var icon: String {
+        switch self {
+        case .oldest: return "clock.arrow.circlepath"
+        case .newest: return "clock"
+        case .popular: return "hand.thumbsup"
+        }
+    }
+}
+
+/// One visible comment with what is needed to draw the thread lines next to it.
+struct CommentLine: Identifiable {
+    let item: FlatComment
+    /// Nesting level used for layout, capped so deep threads keep their width.
+    let level: Int
+    /// `continues[k]` is true when the line of level `k` goes on below this row.
+    let continues: [Bool]
+    let hasVisibleChildren: Bool
+
+    var id: Int { item.id }
 }
 
 @MainActor
@@ -103,6 +123,29 @@ final class CommentsModel: ObservableObject {
             if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
             self.error = error.localizedDescription
         }
+    }
+
+    static let maxLevel = 3
+
+    /// Visible comments of a thread prepared for drawing.
+    func lines(for thread: CommentThread) -> [CommentLine] {
+        let items = [thread.root] + visibleReplies(of: thread)
+        let levels = items.map { min($0.depth, Self.maxLevel) }
+        var result: [CommentLine] = []
+        result.reserveCapacity(items.count)
+        // Walk backwards: a level's line continues past a row when a later
+        // sibling at that level comes before the thread climbs above it.
+        var pending = [Bool](repeating: false, count: Self.maxLevel + 2)
+        for i in items.indices.reversed() {
+            let level = levels[i]
+            let continues = Array(pending[0...level])
+            pending[level] = true
+            for k in (level + 1)..<pending.count { pending[k] = false }
+            let hasChildren = i + 1 < items.count && items[i + 1].depth > items[i].depth
+            result.append(CommentLine(item: items[i], level: level, continues: continues,
+                                      hasVisibleChildren: hasChildren))
+        }
+        return result.reversed()
     }
 
     func toggle(_ id: Int) {
@@ -183,7 +226,7 @@ struct CommentsView: View {
         ScrollViewReader { proxy in
             Group {
                 if model.loaded {
-                    list
+                    feed(proxy: proxy)
                 } else if let error = model.error {
                     ErrorView(message: error) {
                         Task { await model.load() }
@@ -200,11 +243,23 @@ struct CommentsView: View {
                 return router.handle(url) ? .handled : .systemAction
             })
         }
+        .background(Color(.systemBackground))
         .navigationTitle("Комментарии")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if model.loaded, model.threads.contains(where: { !$0.replies.isEmpty }) {
-                ToolbarItem(placement: .navigationBarTrailing) {
+            if model.loaded, !model.threads.isEmpty {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Menu {
+                        Picker("Сортировка", selection: $model.sort) {
+                            ForEach(CommentSort.allCases) { sort in
+                                Label(sort.rawValue, systemImage: sort.icon).tag(sort)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease")
+                    }
+                    .accessibilityLabel("Сортировка")
+
                     Menu {
                         Button {
                             withAnimation { model.collapseAll() }
@@ -217,7 +272,7 @@ struct CommentsView: View {
                             Label("Развернуть все", systemImage: "rectangle.expand.vertical")
                         }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Image(systemName: "ellipsis")
                     }
                 }
             }
@@ -230,104 +285,49 @@ struct CommentsView: View {
         }
     }
 
-    private var list: some View {
-        List {
-            Section {
-                VStack(alignment: .leading, spacing: 4) {
+    private func feed(proxy: ScrollViewProxy) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(title)
-                        .font(.title3.weight(.bold))
+                        .font(.title2.weight(.bold))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(countText)
+                    Text("\(Plural.comments(model.totalCount)) · \(model.sort.rawValue.lowercased())")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 8, trailing: 4))
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
 
-                Picker("Сортировка", selection: $model.sort.animation()) {
-                    ForEach(CommentSort.allCases) { sort in
-                        Text(sort.rawValue).tag(sort)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-            }
-
-            if model.threads.isEmpty {
-                Section {
+                if model.threads.isEmpty {
                     Text("Комментариев пока нет")
                         .foregroundStyle(.secondary)
+                        .padding(16)
                 }
-            }
 
-            ForEach(model.sortedThreads) { thread in
-                Section {
-                    row(thread.root)
-                    ForEach(model.visibleReplies(of: thread)) { reply in
-                        row(reply)
-                    }
-                    if !thread.replies.isEmpty {
-                        threadToggle(thread)
+                ForEach(model.sortedThreads) { thread in
+                    ForEach(model.lines(for: thread)) { line in
+                        CommentRow(line: line,
+                                   isCollapsed: model.collapsed.contains(line.id),
+                                   isHighlighted: highlighted == line.id,
+                                   commentURL: commentURL(line.id),
+                                   onToggle: { withAnimation(.easeInOut(duration: 0.25)) { model.toggle(line.id) } },
+                                   onParent: { parent in jump(to: parent, proxy: proxy) },
+                                   onImage: { viewerImage = ViewerImage(url: $0) })
+                            .id(line.id)
                     }
                 }
             }
+            .padding(.bottom, 24)
         }
-        .listStyle(.insetGrouped)
-        .environment(\.defaultMinListRowHeight, 44)
         .refreshable { await model.load() }
-    }
-
-    private func row(_ item: FlatComment) -> some View {
-        CommentRow(item: item,
-                   isCollapsed: model.collapsed.contains(item.id),
-                   commentURL: commentURL(item.id),
-                   onToggle: { withAnimation(.easeInOut(duration: 0.25)) { model.toggle(item.id) } },
-                   onImage: { viewerImage = ViewerImage(url: $0) })
-            .id(item.id)
-            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-            .listRowBackground(highlighted == item.id ? Color.accentColor.opacity(0.15) : nil)
-    }
-
-    /// Full-width row at the bottom of a thread card: the main way to fold
-    /// or unfold a whole thread.
-    private func threadToggle(_ thread: CommentThread) -> some View {
-        let isCollapsed = model.collapsed.contains(thread.id)
-        return Button {
-            withAnimation(.easeInOut(duration: 0.25)) { model.toggle(thread.id) }
-        } label: {
-            HStack {
-                Text(isCollapsed ? "Показать ответы (\(thread.replies.count))" : "Скрыть ответы")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                    .font(.subheadline.weight(.semibold))
-            }
-            .foregroundColor(.accentColor)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private func commentURL(_ id: Int) -> URL {
         var components = URLComponents(url: SiteLinks.absolute(path), resolvingAgainstBaseURL: false)
         components?.fragment = "comment-\(id)"
         return components?.url ?? SiteLinks.absolute(path)
-    }
-
-    private var countText: String {
-        let n = model.totalCount
-        let mod10 = n % 10, mod100 = n % 100
-        let word: String
-        if mod10 == 1 && mod100 != 11 {
-            word = "комментарий"
-        } else if (2...4).contains(mod10) && !(12...14).contains(mod100) {
-            word = "комментария"
-        } else {
-            word = "комментариев"
-        }
-        return "\(n) \(word)"
     }
 
     private func jump(to id: Int, proxy: ScrollViewProxy) {
@@ -344,141 +344,211 @@ struct CommentsView: View {
     }
 }
 
+enum Plural {
+    static func form(_ n: Int, _ one: String, _ few: String, _ many: String) -> String {
+        let mod10 = n % 10, mod100 = n % 100
+        if mod10 == 1 && mod100 != 11 { return one }
+        if (2...4).contains(mod10) && !(12...14).contains(mod100) { return few }
+        return many
+    }
+
+    static func comments(_ n: Int) -> String {
+        "\(n) \(form(n, "комментарий", "комментария", "комментариев"))"
+    }
+
+    static func replies(_ n: Int) -> String {
+        "\(n) \(form(n, "ответ", "ответа", "ответов"))"
+    }
+}
+
+enum CommentLayout {
+    static let indent: CGFloat = 22
+    static let lineX: CGFloat = 3
+    static let topPadding: CGFloat = 14
+    static let rootTopPadding: CGFloat = 22
+    static let bottomPadding: CGFloat = 10
+    static let horizontalPadding: CGFloat = 16
+    static let avatarSize: CGFloat = 38
+    /// Vertical center of the avatar, where the elbow meets the row.
+    static let elbowY: CGFloat = avatarSize / 2
+}
+
 struct CommentRow: View {
-    let item: FlatComment
+    let line: CommentLine
     let isCollapsed: Bool
+    let isHighlighted: Bool
     let commentURL: URL
     let onToggle: () -> Void
+    let onParent: (Int) -> Void
     let onImage: (URL) -> Void
 
-    private static let maxIndent = 4
-    private static let indentStep: CGFloat = 14
-    private static let threadColors: [Color] = [.blue, .green, .orange, .purple, .pink, .teal]
-
+    private var item: FlatComment { line.item }
     private var comment: Comment { item.comment }
     private var isReply: Bool { item.depth > 0 }
-    private var visualDepth: Int { min(item.depth, Self.maxIndent) }
     private var isAnonymous: Bool { comment.name?.trimmingCharacters(in: .whitespaces).isEmpty ?? true }
+    private var topPadding: CGFloat { isReply ? CommentLayout.topPadding : CommentLayout.rootTopPadding }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            if isReply {
-                Color.clear
-                    .frame(width: CGFloat(visualDepth - 1) * Self.indentStep)
-                Capsule()
-                    .fill(Self.threadColors[(item.depth - 1) % Self.threadColors.count].opacity(0.6))
-                    .frame(width: 2)
-                    .padding(.trailing, 10)
+        VStack(alignment: .leading, spacing: 10) {
+            header
+
+            if comment.hidden == true {
+                Text(comment.message ?? "Комментарий скрыт")
+                    .font(.body.italic())
+                    .foregroundStyle(.secondary)
+            } else {
+                MessageView(blocks: item.blocks)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                header
-
-                if item.depth > Self.maxIndent, let parent = item.parentName {
-                    Label("ответ \(parent)", systemImage: "arrowshape.turn.up.left.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                if comment.hidden == true {
-                    Text(comment.message ?? "Комментарий скрыт")
-                        .font(.subheadline.italic())
-                        .foregroundStyle(.secondary)
-                } else {
-                    MessageView(blocks: item.blocks)
-                }
-
-                if let images = comment.images, !images.isEmpty {
-                    imageStrip(images)
-                }
-
-                footer
+            if let images = comment.images, !images.isEmpty {
+                imageStrip(images)
             }
+
+            reactions
+            actions
         }
-        .alignmentGuide(.listRowSeparatorLeading) { _ in
-            isReply ? CGFloat(visualDepth - 1) * Self.indentStep + 12 : 0
+        .padding(.leading, CGFloat(line.level) * CommentLayout.indent)
+        .padding(.top, topPadding)
+        .padding(.bottom, CommentLayout.bottomPadding)
+        .padding(.horizontal, CommentLayout.horizontalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(alignment: .topLeading) {
+            ThreadLines(line: line, topPadding: topPadding)
+                .stroke(Color(.systemGray3), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                .padding(.leading, CommentLayout.horizontalPadding)
         }
-        .contextMenu {
-            if let message = comment.message, !message.isEmpty {
-                Button {
-                    UIPasteboard.general.string = message
-                } label: {
-                    Label("Скопировать текст", systemImage: "doc.on.doc")
-                }
-            }
-            ShareLink(item: commentURL) {
-                Label("Поделиться ссылкой", systemImage: "square.and.arrow.up")
-            }
-            if isReply, item.descendants > 0 {
-                Button(action: onToggle) {
-                    Label(isCollapsed ? "Развернуть ветку" : "Свернуть ветку",
-                          systemImage: isCollapsed ? "chevron.down" : "chevron.up")
-                }
-            }
-        }
+        .background(isHighlighted ? Color.accentColor.opacity(0.12) : Color.clear)
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(item.authorName)
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(AuthorColor.color(for: comment))
-                .lineLimit(1)
-            // Anonymous authors are told apart by their IP hash.
-            if isAnonymous, let hash = comment.ipHash, !hash.isEmpty {
-                Text(hash)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-            if comment.isBot == true {
-                Text("БОТ")
-                    .font(.caption2.weight(.bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Color.accentColor, in: Capsule())
-            }
-            Spacer(minLength: 8)
-            if let date = comment.createdAt {
-                Text(DateParsing.relative(date))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 10) {
+            AvatarView(comment: comment, name: item.authorName, isAnonymous: isAnonymous,
+                       size: CommentLayout.avatarSize)
+            nameAndMeta
+        }
+    }
+
+    private var nameAndMeta: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(item.authorName)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
-            }
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 8) {
-            VotePill(likes: comment.likesCount ?? 0, dislikes: comment.dislikesCount ?? 0)
-            Spacer(minLength: 8)
-            // Nested branches fold here; whole threads fold from the card's bottom row.
-            if isReply, item.descendants > 0 {
-                Button(action: onToggle) {
-                    HStack(spacing: 4) {
-                        Text(isCollapsed ? "Ответы (\(item.descendants))" : "Свернуть")
-                        Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                    }
-                    .font(.footnote.weight(.semibold))
-                    .foregroundColor(.accentColor)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.accentColor.opacity(0.12), in: Capsule())
-                    .padding(.vertical, 6)
-                    .contentShape(Rectangle())
+                if comment.isBot == true {
+                    Text("БОТ")
+                        .font(.caption2.weight(.bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor, in: Capsule())
                 }
-                .buttonStyle(.borderless)
-                .padding(.vertical, -6)
+                if let parent = comment.parentId {
+                    Button {
+                        onParent(parent)
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, -6)
+                    .accessibilityLabel("К родительскому комментарию")
+                }
             }
+
+            HStack(spacing: 6) {
+                if let date = comment.createdAt {
+                    Text(DateParsing.relative(date))
+                }
+                // Anonymous authors are told apart by their IP hash.
+                if isAnonymous, let hash = comment.ipHash, !hash.isEmpty {
+                    Text("·")
+                    Text(hash).font(.subheadline.monospaced())
+                }
+                if item.depth > CommentsModel.maxLevel, let parent = item.parentName {
+                    Text("·")
+                    Text("ответ \(parent)").lineLimit(1)
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
         }
     }
 
-    private func imageStrip(_ images: [CommentImage]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+    @ViewBuilder
+    private var reactions: some View {
+        let likes = comment.likesCount ?? 0
+        let dislikes = comment.dislikesCount ?? 0
+        if likes > 0 || dislikes > 0 {
             HStack(spacing: 8) {
-                ForEach(images, id: \.url) { image in
-                    if let url = URL(string: image.url) {
+                if likes > 0 { ReactionPill(emoji: "👍", count: likes) }
+                if dislikes > 0 { ReactionPill(emoji: "👎", count: dislikes) }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Нравится: \(likes), не нравится: \(dislikes)")
+        }
+    }
+
+    private var actions: some View {
+        HStack(spacing: 20) {
+            if item.descendants > 0 {
+                Button(action: onToggle) {
+                    Text(isCollapsed ? Plural.replies(item.descendants) : "Свернуть")
+                        .font(.body)
+                        .foregroundColor(.accentColor)
+                        .frame(minHeight: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Menu {
+                if let message = comment.message, !message.isEmpty {
+                    Button {
+                        UIPasteboard.general.string = message
+                    } label: {
+                        Label("Скопировать текст", systemImage: "doc.on.doc")
+                    }
+                }
+                ShareLink(item: commentURL) {
+                    Label("Поделиться ссылкой", systemImage: "square.and.arrow.up")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+        }
+        .padding(.vertical, -4)
+    }
+
+    @ViewBuilder
+    private func imageStrip(_ images: [CommentImage]) -> some View {
+        let urls = images.compactMap { URL(string: $0.url) }
+        if urls.count == 1, let url = urls.first {
+            Button {
+                onImage(url)
+            } label: {
+                AsyncImage(url: url) { phase in
+                    if let img = phase.image {
+                        img.resizable().scaledToFit()
+                    } else {
+                        Color(.tertiarySystemFill).frame(height: 200)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: 360, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(urls, id: \.self) { url in
                         Button {
                             onImage(url)
                         } label: {
@@ -489,10 +559,10 @@ struct CommentRow: View {
                                     Color(.tertiarySystemFill)
                                 }
                             }
-                            .frame(width: 140, height: 140)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .frame(width: 180, height: 180)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -500,40 +570,66 @@ struct CommentRow: View {
     }
 }
 
-struct VotePill: View {
-    let likes: Int
-    let dislikes: Int
+/// Draws the thread guides to the left of a reply: straight lines for the
+/// ancestor levels that continue, and a rounded elbow into this comment.
+struct ThreadLines: Shape {
+    let line: CommentLine
+    let topPadding: CGFloat
 
-    var body: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 4) {
-                Image(systemName: likes > 0 ? "hand.thumbsup.fill" : "hand.thumbsup")
-                Text("\(likes)")
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let indent = CommentLayout.indent
+        func x(_ level: Int) -> CGFloat { CGFloat(level - 1) * indent + CommentLayout.lineX }
+
+        let level = line.level
+        if level >= 1 {
+            for k in 1..<level where line.continues[k] {
+                path.move(to: CGPoint(x: x(k), y: 0))
+                path.addLine(to: CGPoint(x: x(k), y: rect.height))
             }
-            .foregroundColor(likes > 0 ? Color(.systemGreen) : Color(.secondaryLabel))
-
-            Rectangle()
-                .fill(Color(.separator))
-                .frame(width: 1, height: 12)
-
-            HStack(spacing: 4) {
-                Image(systemName: dislikes > 0 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
-                Text("\(dislikes)")
+            let lx = x(level)
+            let elbowY = topPadding + CommentLayout.elbowY
+            let radius: CGFloat = 10
+            path.move(to: CGPoint(x: lx, y: 0))
+            path.addLine(to: CGPoint(x: lx, y: elbowY - radius))
+            path.addQuadCurve(to: CGPoint(x: lx + radius, y: elbowY), control: CGPoint(x: lx, y: elbowY))
+            path.addLine(to: CGPoint(x: CGFloat(level) * indent - 5, y: elbowY))
+            if line.continues[level] {
+                path.move(to: CGPoint(x: lx, y: elbowY - radius))
+                path.addLine(to: CGPoint(x: lx, y: rect.height))
             }
-            .foregroundColor(dislikes > 0 ? Color(.systemRed) : Color(.secondaryLabel))
         }
-        .font(.footnote.weight(.semibold))
-        .monospacedDigit()
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color(.tertiarySystemFill), in: Capsule())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Нравится: \(likes), не нравится: \(dislikes)")
+
+        // Line from this comment down to its first visible reply.
+        if line.hasVisibleChildren, level < CommentsModel.maxLevel {
+            let cx = x(level + 1)
+            path.move(to: CGPoint(x: cx, y: rect.height - CommentLayout.bottomPadding + 2))
+            path.addLine(to: CGPoint(x: cx, y: rect.height))
+        }
+        return path
     }
 }
 
-/// A stable per-author color for nicknames, derived from the IP hash so the
-/// same person keeps the same color across threads.
+struct ReactionPill: View {
+    let emoji: String
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(emoji)
+            Text("\(count)")
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+        }
+        .font(.body)
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .background(Color(.tertiarySystemFill), in: Capsule())
+    }
+}
+
+/// A stable per-author color, derived from the IP hash so the same person
+/// keeps the same color across threads.
 enum AuthorColor {
     private static let palette: [Color] = [
         .blue, .green, .orange, .purple, .pink, .teal, .indigo, .red, .brown,
@@ -547,6 +643,32 @@ enum AuthorColor {
         var hash: UInt64 = 5381
         for byte in seed.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
         return palette[Int(hash % UInt64(palette.count))]
+    }
+}
+
+struct AvatarView: View {
+    let comment: Comment
+    let name: String
+    let isAnonymous: Bool
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle().fill(AuthorColor.color(for: comment).gradient)
+            Group {
+                if comment.isBot == true {
+                    Image(systemName: "sparkles")
+                } else if isAnonymous {
+                    Image(systemName: "person.fill")
+                } else {
+                    Text(String(name.prefix(1)).uppercased())
+                }
+            }
+            .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
+            .foregroundColor(.white)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 
