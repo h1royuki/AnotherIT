@@ -62,8 +62,6 @@ enum FeedLayout {
 }
 
 struct ArticleListView: View {
-    private static let topAnchor = "top"
-
     @StateObject private var model: ArticleListModel
     @EnvironmentObject private var router: Router
 
@@ -72,54 +70,70 @@ struct ArticleListView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: FeedLayout.cardSpacing) {
-                    Color.clear.frame(height: 0).id(Self.topAnchor)
-
-                    let pinned = model.articles.filter { $0.isPinned == true }
-                    if !pinned.isEmpty {
-                        PinnedCard(articles: pinned)
-                    }
-
-                    ForEach(model.articles.filter { $0.isPinned != true }) { article in
-                        ArticleCard(article: article)
-                            .onAppear {
-                                if article.id == model.articles.last?.id {
-                                    Task { await model.loadNext() }
-                                }
-                            }
-                    }
-
-                    if model.isLoading || model.canLoadMore || model.error != nil {
-                        footer
-                    }
-                }
-                .padding(.horizontal, FeedLayout.margin)
-                .padding(.vertical, 8)
-            }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle(model.tag.map { "#\($0.name)" } ?? "")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+        ScrollView {
+            LazyVStack(spacing: FeedLayout.cardSpacing) {
                 if model.tag == nil {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            withAnimation { proxy.scrollTo(Self.topAnchor, anchor: .top) }
-                        } label: {
-                            Text("Другое IT")
-                                .font(.headline)
-                                .padding(.horizontal, 6)
+                    homeHeader
+                }
+
+                let pinned = model.articles.filter { $0.isPinned == true }
+                if !pinned.isEmpty {
+                    PinnedCard(articles: pinned)
+                }
+
+                ForEach(model.articles.filter { $0.isPinned != true }) { article in
+                    ArticleCard(article: article)
+                        .onAppear {
+                            if article.id == model.articles.last?.id {
+                                Task { await model.loadNext() }
+                            }
                         }
-                        .accessibilityHint("Прокрутить ленту наверх")
-                    }
+                }
+
+                if model.isLoading || model.canLoadMore || model.error != nil {
+                    footer
                 }
             }
+            .padding(.horizontal, FeedLayout.margin)
+            .padding(.vertical, 8)
         }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle(model.tag.map { "#\($0.name)" } ?? "")
+        .navigationBarTitleDisplayMode(.inline)
+        // The logo scrolls with the feed instead of occupying a bar.
+        .toolbar(model.tag == nil ? .hidden : .automatic, for: .navigationBar)
         .refreshable { await model.reload() }
         .task {
             if model.articles.isEmpty { await model.reload() }
         }
+    }
+
+    /// Logo and the tags menu at the top of the home feed.
+    private var homeHeader: some View {
+        HStack {
+            LogoView()
+            Spacer()
+            Menu {
+                ForEach(model.tags) { tag in
+                    Button {
+                        router.push(.tag(tag))
+                    } label: {
+                        Text(tag.count.map { "\(tag.name) (\($0))" } ?? tag.name)
+                    }
+                }
+            } label: {
+                Image(systemName: "number")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 40, height: 40)
+                    .background(FeedLayout.cardBackground, in: Circle())
+                    .contentShape(Circle())
+            }
+            .disabled(model.tags.isEmpty)
+            .accessibilityLabel("Теги")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
@@ -379,65 +393,13 @@ struct ArticleCard: View {
     }
 }
 
-/// All site tags, most used first, with search.
-struct TagsView: View {
-    @EnvironmentObject private var router: Router
-    @State private var tags: [Tag] = []
-    @State private var query = ""
-    @State private var error: String?
-
-    private var filtered: [Tag] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return tags }
-        return tags.filter { $0.name.localizedCaseInsensitiveContains(q) }
-    }
-
+/// The site's "ДIT" wordmark: a red Д followed by IT.
+struct LogoView: View {
     var body: some View {
-        Group {
-            if tags.isEmpty, let error {
-                ErrorView(message: error) {
-                    Task { await load() }
-                }
-            } else if tags.isEmpty {
-                ProgressView()
-            } else {
-                List(filtered) { tag in
-                    Button {
-                        router.push(.tag(tag))
-                    } label: {
-                        HStack {
-                            Text("#\(tag.name)")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            if let count = tag.count {
-                                Text("\(count)")
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .listStyle(.insetGrouped)
-                .searchable(text: $query, prompt: "Поиск тегов")
-            }
-        }
-        .navigationTitle("Теги")
-        .task {
-            if tags.isEmpty { await load() }
-        }
-        .refreshable { await load() }
-    }
-
-    private func load() async {
-        do {
-            let page = try await APIClient.shared.articles(page: 1, tag: nil)
-            tags = page.props.allTags.sorted { ($0.count ?? 0) > ($1.count ?? 0) }
-            error = nil
-        } catch {
-            if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-            self.error = error.localizedDescription
-        }
+        (Text("Д").foregroundColor(Color(red: 0.81, green: 0.16, blue: 0.34))
+            + Text("IT").foregroundColor(.primary))
+            .font(.system(size: 30, weight: .black))
+            .kerning(-0.5)
+            .accessibilityLabel("Другое IT")
     }
 }

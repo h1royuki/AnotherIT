@@ -39,6 +39,8 @@ struct ArticleView: View {
     @State private var highlighted: Int?
     @State private var viewerImage: ViewerImage?
     @State private var didFocus = false
+    /// Whether the comments have been scrolled into view.
+    @State private var inComments = false
 
     init(path: String, focusComments: Bool = false) {
         self.focusComments = focusComments
@@ -149,14 +151,24 @@ struct ArticleView: View {
 
                     commentsSection(proxy: proxy)
                 }
-                .padding(.bottom, comments.newIds.isEmpty ? 32 : 96)
+                .padding(.bottom, 96)
             }
             .refreshable { await load() }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                webHeight > 0 && geometry.contentOffset.y + geometry.containerSize.height > webHeight + 80
+            } action: { _, reached in
+                withAnimation(.easeInOut(duration: 0.2)) { inComments = reached }
+            }
             .overlay(alignment: .bottom) {
-                if comments.loaded, !comments.newIds.isEmpty {
-                    newCommentsPill(proxy: proxy)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                Group {
+                    if !inComments {
+                        commentsButton(article, proxy: proxy)
+                    } else if comments.loaded, !comments.newIds.isEmpty {
+                        newCommentsPill(proxy: proxy)
+                    }
                 }
+                .padding(.bottom, 12)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             .environment(\.openURL, OpenURLAction { url in
                 if url.scheme == CommentMarkdown.commentScheme, let id = Int(url.host ?? "") {
@@ -256,6 +268,36 @@ struct ArticleView: View {
         }
     }
 
+    /// Floating button that takes the reader straight to the comments.
+    private func commentsButton(_ article: Article, proxy: ScrollViewProxy) -> some View {
+        let newComments = comments.loaded
+            ? comments.newIds.count
+            : seen.newCount(articleId: article.id, commentCount: article.commentCount)
+        return Button {
+            withAnimation { proxy.scrollTo(Self.commentsAnchor, anchor: .top) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "bubble.left")
+                    .font(.system(size: 19, weight: .medium))
+                Text("\(article.commentCount ?? 0)")
+                    .monospacedDigit()
+                if newComments > 0 {
+                    Text("+\(newComments)")
+                        .monospacedDigit()
+                        .foregroundColor(.accentColor)
+                }
+            }
+            .font(.body.weight(.semibold))
+            .padding(.horizontal, 22)
+            .frame(minHeight: 48)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .accessibilityLabel("Перейти к комментариям: \(article.commentCount ?? 0)")
+    }
+
     /// Floating Liquid Glass capsule: tap to step through new comments,
     /// the cross marks them all as read.
     private func newCommentsPill(proxy: ScrollViewProxy) -> some View {
@@ -290,7 +332,6 @@ struct ArticleView: View {
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
         .glassEffect(.regular.interactive(), in: .capsule)
-        .padding(.bottom, 12)
     }
 
     private func commentURL(_ id: Int) -> URL {

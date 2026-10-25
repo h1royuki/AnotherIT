@@ -9,19 +9,9 @@ struct AnotherITApp: App {
 
     var body: some Scene {
         WindowGroup {
-            TabView {
-                Tab("Лента", systemImage: "house") {
-                    RoutedStack {
-                        ArticleListView(tag: nil)
-                    }
-                }
-                Tab("Теги", systemImage: "number") {
-                    RoutedStack {
-                        TagsView()
-                    }
-                }
+            RoutedStack {
+                ArticleListView(tag: nil)
             }
-            .tabBarMinimizeBehavior(.onScrollDown)
         }
     }
 }
@@ -32,7 +22,7 @@ enum Route: Hashable {
     case tag(Tag)
 }
 
-/// A navigation stack with its own router, one per tab.
+/// The navigation stack with its router.
 struct RoutedStack<Root: View>: View {
     @StateObject private var router = Router()
     @ViewBuilder let root: () -> Root
