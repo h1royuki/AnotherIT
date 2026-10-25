@@ -27,6 +27,7 @@ final class ArticleModel: ObservableObject {
 struct ArticleView: View {
     @StateObject private var model: ArticleModel
     @EnvironmentObject private var router: Router
+    @ObservedObject private var seen = SeenComments.shared
     @Environment(\.openURL) private var openURL
 
     init(path: String) {
@@ -85,13 +86,19 @@ struct ArticleView: View {
 
     /// Floating capsule with the article actions, like vc.ru.
     private func actionBar(_ article: Article) -> some View {
-        HStack(spacing: 26) {
+        let newComments = seen.newCount(articleId: article.id, commentCount: article.commentCount)
+        return HStack(spacing: 26) {
             Button {
                 openComments(article)
             } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "bubble.left")
                     Text("\(article.commentCount ?? 0)").monospacedDigit()
+                    if newComments > 0 {
+                        Text("+\(newComments)")
+                            .monospacedDigit()
+                            .foregroundColor(.accentColor)
+                    }
                 }
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
@@ -116,7 +123,7 @@ struct ArticleView: View {
     }
 
     private func openComments(_ article: Article) {
-        router.push(.comments(path: article.url, title: article.title))
+        router.push(.comments(path: article.url, title: article.title, articleId: article.id))
     }
 
     private func handleLink(_ url: URL, article: Article) {

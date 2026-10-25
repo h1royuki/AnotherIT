@@ -17,8 +17,8 @@ struct AnotherITApp: App {
                         switch route {
                         case .article(let path):
                             ArticleView(path: path)
-                        case .comments(let path, let title):
-                            CommentsView(path: path, title: title)
+                        case .comments(let path, let title, let articleId):
+                            CommentsView(path: path, title: title, articleId: articleId)
                         case .tag(let tag):
                             ArticleListView(tag: tag)
                         }
@@ -31,7 +31,7 @@ struct AnotherITApp: App {
 
 enum Route: Hashable {
     case article(path: String)
-    case comments(path: String, title: String)
+    case comments(path: String, title: String, articleId: Int)
     case tag(Tag)
 }
 

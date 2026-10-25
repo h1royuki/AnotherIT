@@ -147,6 +147,7 @@ enum FeedStyle {
 struct PinnedCard: View {
     let articles: [ArticleSummary]
     @EnvironmentObject private var router: Router
+    @ObservedObject private var seen = SeenComments.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -166,6 +167,13 @@ struct PinnedCard: View {
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
+                        let newComments = seen.newCount(articleId: article.id, commentCount: article.commentCount)
+                        if newComments > 0 {
+                            Text("+\(newComments)")
+                                .font(.subheadline.weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundColor(.accentColor)
+                        }
                         Image(systemName: "chevron.right")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(.tertiary)
@@ -191,11 +199,13 @@ struct PinnedCard: View {
 struct ArticleCard: View {
     let article: ArticleSummary
     @EnvironmentObject private var router: Router
+    @ObservedObject private var seen = SeenComments.shared
 
     private var authorName: String { article.author?.name ?? "Другое IT" }
     private var authorSlug: String { article.author?.slug ?? authorName }
     private var isBot: Bool { authorSlug == "sitebot" }
     private var link: URL { SiteLinks.absolute(article.url) }
+    private var newComments: Int { seen.newCount(articleId: article.id, commentCount: article.commentCount) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -275,7 +285,7 @@ struct ArticleCard: View {
                     Label("Поделиться", systemImage: "square.and.arrow.up")
                 }
                 Button {
-                    router.push(.comments(path: article.url, title: article.title))
+                    router.push(.comments(path: article.url, title: article.title, articleId: article.id))
                 } label: {
                     Label("Комментарии", systemImage: "bubble.left")
                 }
@@ -299,11 +309,16 @@ struct ArticleCard: View {
     private var actions: some View {
         HStack(spacing: 28) {
             Button {
-                router.push(.comments(path: article.url, title: article.title))
+                router.push(.comments(path: article.url, title: article.title, articleId: article.id))
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "bubble.left")
                     Text("\(article.commentCount ?? 0)").monospacedDigit()
+                    if newComments > 0 {
+                        Text("+\(newComments)")
+                            .monospacedDigit()
+                            .foregroundColor(.accentColor)
+                    }
                 }
                 .frame(minHeight: 36)
                 .contentShape(Rectangle())

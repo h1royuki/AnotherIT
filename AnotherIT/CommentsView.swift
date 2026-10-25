@@ -68,10 +68,90 @@ final class CommentsModel: ObservableObject {
         }
     }
 
-    let path: String
+    /// Comments posted since the previous visit. Fixed for the lifetime of
+    /// the screen so highlights don't vanish once the visit is recorded.
+    @Published private(set) var newIds: Set<Int> = []
+    /// New comments already reached with the "next new" navigation.
+    @Published private(set) var visitedNew: Set<Int> = []
+    @Published private(set) var currentNew: Int?
+    /// Number of new comments among each comment's replies.
+    private(set) var newReplies: [Int: Int] = [:]
 
-    init(path: String) {
+    let path: String
+    let articleId: Int
+    private let seen = SeenComments.shared
+
+    init(path: String, articleId: Int) {
         self.path = path
+        self.articleId = articleId
+    }
+
+    var remainingNew: Int { newIds.subtracting(visitedNew).count }
+
+    /// New comments in the order they appear on screen.
+    private var newInDisplayOrder: [Int] {
+        sortedThreads.flatMap { [$0.root] + $0.replies }.map(\.id).filter { newIds.contains($0) }
+    }
+
+    /// Moves to the next (or previous) new comment and returns its id.
+    func stepNew(by offset: Int) -> Int? {
+        let order = newInDisplayOrder
+        guard !order.isEmpty else { return nil }
+        let index = currentNew.flatMap { order.firstIndex(of: $0) }
+        let next: Int
+        if let index {
+            next = order[(index + offset + order.count) % order.count]
+        } else {
+            next = offset > 0 ? order[0] : order[order.count - 1]
+        }
+        currentNew = next
+        visitedNew.insert(next)
+        return next
+    }
+
+    /// Records every loaded comment as seen. With `clearHighlights` the new
+    /// comment marks disappear right away (the "mark as read" button).
+    func markAllSeen(clearHighlights: Bool = false) {
+        guard loaded else { return }
+        let ids = threads.flatMap { [$0.root.id] + $0.replies.map(\.id) }
+        seen.markSeen(articleId: articleId, lastSeenId: ids.max() ?? 0, commentCount: ids.count)
+        if clearHighlights {
+            newIds = []
+            newReplies = [:]
+            visitedNew = []
+            currentNew = nil
+        }
+    }
+
+    private func updateNewComments() {
+        let ids = threads.flatMap { [$0.root.id] + $0.replies.map(\.id) }
+        guard let record = seen.record(for: articleId) else {
+            // First visit: nothing is new, remember everything as seen.
+            newIds = []
+            newReplies = [:]
+            seen.markSeen(articleId: articleId, lastSeenId: ids.max() ?? 0, commentCount: ids.count)
+            return
+        }
+        newIds = Set(ids.filter { $0 > record.lastSeenId })
+        visitedNew = visitedNew.intersection(newIds)
+        seen.updateCount(articleId: articleId, commentCount: ids.count)
+
+        var counts: [Int: Int] = [:]
+        if !newIds.isEmpty {
+            for thread in threads {
+                let items = [thread.root] + thread.replies
+                for (i, item) in items.enumerated() where item.descendants > 0 {
+                    var n = 0
+                    var j = i + 1
+                    while j < items.count, items[j].depth > item.depth {
+                        if newIds.contains(items[j].id) { n += 1 }
+                        j += 1
+                    }
+                    if n > 0 { counts[item.id] = n }
+                }
+            }
+        }
+        newReplies = counts
     }
 
     var totalCount: Int {
@@ -117,6 +197,7 @@ final class CommentsModel: ObservableObject {
             let tree = try await APIClient.shared.comments(path: path)
             threads = await Task.detached(priority: .userInitiated) { CommentsModel.makeThreads(tree) }.value
             if sort == .popular { collapseAll() }
+            updateNewComments()
             loaded = true
             error = nil
         } catch {
@@ -215,11 +296,12 @@ struct CommentsView: View {
     @EnvironmentObject private var router: Router
     @State private var highlighted: Int?
     @State private var viewerImage: ViewerImage?
+    @Environment(\.scenePhase) private var scenePhase
 
-    init(path: String, title: String) {
+    init(path: String, title: String, articleId: Int) {
         self.title = title
         self.path = path
-        _model = StateObject(wrappedValue: CommentsModel(path: path))
+        _model = StateObject(wrappedValue: CommentsModel(path: path, articleId: articleId))
     }
 
     var body: some View {
@@ -233,6 +315,12 @@ struct CommentsView: View {
                     }
                 } else {
                     ProgressView()
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if model.loaded, !model.newIds.isEmpty {
+                    newCommentsPanel(proxy: proxy)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .environment(\.openURL, OpenURLAction { url in
@@ -283,6 +371,67 @@ struct CommentsView: View {
         .task {
             if !model.loaded { await model.load() }
         }
+        // Like the site, the visit is recorded when leaving the comments.
+        .onDisappear { model.markAllSeen() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background { model.markAllSeen() }
+        }
+    }
+
+    private var subtitle: Text {
+        let base = Text("\(Plural.comments(model.totalCount)) · \(model.sort.rawValue.lowercased())")
+        guard !model.newIds.isEmpty else { return base }
+        return base + Text(" · \(Plural.newComments(model.newIds.count))")
+            .foregroundColor(.accentColor)
+            .fontWeight(.semibold)
+    }
+
+    /// Floating navigator through comments added since the last visit.
+    private func newCommentsPanel(proxy: ScrollViewProxy) -> some View {
+        HStack(spacing: 0) {
+            Text(model.remainingNew > 0 ? Plural.newComments(model.remainingNew) : "Все новые просмотрены")
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+                .padding(.leading, 18)
+                .padding(.trailing, 8)
+
+            Button {
+                if let id = model.stepNew(by: -1) { jump(to: id, proxy: proxy) }
+            } label: {
+                Image(systemName: "chevron.up")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Предыдущий новый")
+
+            Button {
+                if let id = model.stepNew(by: 1) { jump(to: id, proxy: proxy) }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Следующий новый")
+
+            Divider().frame(height: 22)
+
+            Button {
+                withAnimation { model.markAllSeen(clearHighlights: true) }
+            } label: {
+                Image(systemName: "checkmark")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Отметить все прочитанными")
+            .padding(.trailing, 4)
+        }
+        .font(.body.weight(.semibold))
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .padding(.bottom, 8)
     }
 
     private func feed(proxy: ScrollViewProxy) -> some View {
@@ -292,7 +441,7 @@ struct CommentsView: View {
                     Text(title)
                         .font(.title2.weight(.bold))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("\(Plural.comments(model.totalCount)) · \(model.sort.rawValue.lowercased())")
+                    subtitle
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -311,6 +460,8 @@ struct CommentsView: View {
                         CommentRow(line: line,
                                    isCollapsed: model.collapsed.contains(line.id),
                                    isHighlighted: highlighted == line.id,
+                                   isNew: model.newIds.contains(line.id),
+                                   newReplies: model.newReplies[line.id] ?? 0,
                                    commentURL: commentURL(line.id),
                                    onToggle: { withAnimation(.easeInOut(duration: 0.25)) { model.toggle(line.id) } },
                                    onParent: { parent in jump(to: parent, proxy: proxy) },
@@ -319,7 +470,7 @@ struct CommentsView: View {
                     }
                 }
             }
-            .padding(.bottom, 24)
+            .padding(.bottom, model.newIds.isEmpty ? 24 : 90)
         }
         .refreshable { await model.load() }
     }
@@ -356,6 +507,10 @@ enum Plural {
         "\(n) \(form(n, "комментарий", "комментария", "комментариев"))"
     }
 
+    static func newComments(_ n: Int) -> String {
+        "\(n) \(form(n, "новый", "новых", "новых"))"
+    }
+
     static func replies(_ n: Int) -> String {
         "\(n) \(form(n, "ответ", "ответа", "ответов"))"
     }
@@ -377,6 +532,8 @@ struct CommentRow: View {
     let line: CommentLine
     let isCollapsed: Bool
     let isHighlighted: Bool
+    let isNew: Bool
+    let newReplies: Int
     let commentURL: URL
     let onToggle: () -> Void
     let onParent: (Int) -> Void
@@ -416,7 +573,8 @@ struct CommentRow: View {
                 .stroke(Color(.systemGray3), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                 .padding(.leading, CommentLayout.horizontalPadding)
         }
-        .background(isHighlighted ? Color.accentColor.opacity(0.12) : Color.clear)
+        .background(isHighlighted ? Color.accentColor.opacity(0.14)
+                        : isNew ? Color.accentColor.opacity(0.06) : Color.clear)
     }
 
     private var header: some View {
@@ -460,6 +618,12 @@ struct CommentRow: View {
             }
 
             HStack(spacing: 6) {
+                if isNew {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 7, height: 7)
+                        .accessibilityLabel("Новый")
+                }
                 if let date = comment.createdAt {
                     Text(DateParsing.relative(date))
                 }
@@ -484,7 +648,8 @@ struct CommentRow: View {
 
             if item.descendants > 0 {
                 Button(action: onToggle) {
-                    Text(isCollapsed ? Plural.replies(item.descendants) : "Свернуть")
+                    Text(isCollapsed ? Plural.replies(item.descendants) + (newReplies > 0 ? " · +\(newReplies)" : "")
+                                     : "Свернуть")
                         .font(.body)
                         .foregroundColor(.accentColor)
                         .frame(minHeight: 36)
