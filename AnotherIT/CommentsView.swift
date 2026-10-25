@@ -632,8 +632,11 @@ struct ReactionPill: View {
 /// A stable per-author color, derived from the IP hash so the same person
 /// keeps the same color across threads.
 enum AuthorColor {
-    private static let palette: [Color] = [
-        .blue, .green, .orange, .purple, .pink, .teal, .indigo, .red, .brown,
+    /// System colors with their dark-mode hex values for the article HTML.
+    private static let palette: [(color: Color, hex: String)] = [
+        (.blue, "#0A84FF"), (.green, "#30D158"), (.orange, "#FF9F0A"),
+        (.purple, "#BF5AF2"), (.pink, "#FF375F"), (.teal, "#40C8E0"),
+        (.indigo, "#5E5CE6"), (.red, "#FF453A"), (.brown, "#AC8E68"),
     ]
 
     static func color(for comment: Comment) -> Color {
@@ -642,11 +645,20 @@ enum AuthorColor {
 
     static func color(seed: String, isBot: Bool) -> Color {
         if isBot { return .accentColor }
-        guard !seed.isEmpty else { return .gray }
+        return index(seed).map { palette[$0].color } ?? .gray
+    }
+
+    static func hex(seed: String, isBot: Bool) -> String {
+        if isBot { return "#CE2956" }
+        return index(seed).map { palette[$0].hex } ?? "#8E8E93"
+    }
+
+    private static func index(_ seed: String) -> Int? {
+        guard !seed.isEmpty else { return nil }
         // djb2: stable across launches, unlike Hasher.
         var hash: UInt64 = 5381
         for byte in seed.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
-        return palette[Int(hash % UInt64(palette.count))]
+        return Int(hash % UInt64(palette.count))
     }
 }
 
@@ -684,7 +696,6 @@ extension DateParsing {
         f.unitsStyle = .full
         return f
     }()
-
 
     /// "5 минут назад" for the last week, a short date after that.
     static func relative(_ date: Date) -> String {

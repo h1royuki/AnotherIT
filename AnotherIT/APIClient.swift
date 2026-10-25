@@ -128,13 +128,6 @@ enum DateParsing {
         return formatter.date(from: s)
     }
 
-    static let display: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ru_RU")
-        f.dateFormat = "d MMMM yyyy"
-        return f
-    }()
-
     private static let dayMonth: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ru_RU")
@@ -154,13 +147,6 @@ enum DateParsing {
         let sameYear = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
         return (sameYear ? dayMonth : dayMonthYear).string(from: date)
     }
-
-    static let displayWithTime: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ru_RU")
-        f.dateFormat = "d MMM yyyy, HH:mm"
-        return f
-    }()
 }
 
 enum SiteLinks {

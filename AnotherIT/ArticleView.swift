@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import WebKit
 
 @MainActor
@@ -47,25 +48,71 @@ struct ArticleView: View {
                 ProgressView()
             }
         }
-        .navigationTitle(model.article?.title ?? "")
+        .overlay(alignment: .bottom) {
+            if let article = model.article {
+                actionBar(article)
+            }
+        }
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let article = model.article {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    ShareLink(item: SiteLinks.absolute(article.url))
-                    Button {
-                        openComments(article)
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        ShareLink(item: SiteLinks.absolute(article.url)) {
+                            Label("Поделиться", systemImage: "square.and.arrow.up")
+                        }
+                        Button {
+                            UIPasteboard.general.url = SiteLinks.absolute(article.url)
+                        } label: {
+                            Label("Скопировать ссылку", systemImage: "link")
+                        }
+                        Button {
+                            openURL(SiteLinks.absolute(article.url))
+                        } label: {
+                            Label("Открыть в Safari", systemImage: "safari")
+                        }
                     } label: {
-                        Label("\(article.commentCount ?? 0)", systemImage: "bubble.left.and.bubble.right")
-                            .labelStyle(.titleAndIcon)
+                        Image(systemName: "ellipsis")
                     }
-                    .accessibilityLabel("Комментарии")
                 }
             }
         }
         .task {
             if model.article == nil { await model.load() }
         }
+    }
+
+    /// Floating capsule with the article actions, like vc.ru.
+    private func actionBar(_ article: Article) -> some View {
+        HStack(spacing: 26) {
+            Button {
+                openComments(article)
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "bubble.left")
+                    Text("\(article.commentCount ?? 0)").monospacedDigit()
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Комментарии: \(article.commentCount ?? 0)")
+
+            ShareLink(item: SiteLinks.absolute(article.url)) {
+                Image(systemName: "arrowshape.turn.up.right")
+                    .frame(minWidth: 32, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Поделиться")
+        }
+        .buttonStyle(.plain)
+        .font(.title3)
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 24)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .padding(.bottom, 8)
     }
 
     private func openComments(_ article: Article) {
@@ -169,23 +216,40 @@ enum ArticleHTML {
     static let scheme = "anotherit-app"
 
     static func render(_ article: Article) -> String {
-        var header = ""
+        let authorName = article.author?.name ?? "Другое IT"
+        let authorSlug = article.author?.slug ?? authorName
+        let isBot = authorSlug == "sitebot"
+        let initial = isBot ? "✨" : escape(String(authorName.prefix(1)).uppercased())
+        let avatarColor = AuthorColor.hex(seed: authorSlug, isBot: isBot)
+
+        var sub: [String] = []
+        if let tag = article.tags?.first {
+            sub.append("<a href=\"\(scheme)://tag/\(escape(tag.slug))\">\(escape(tag.name))</a>")
+        }
+        if let date = article.publishedAt {
+            sub.append("<span>\(escape(DateParsing.short(date)))</span>")
+        }
+
+        var header = """
+        <header class="author">
+        <div class="avatar" style="background-color: \(avatarColor)">\(initial)</div>
+        <div><div class="name">\(escape(authorName))</div><div class="sub">\(sub.joined())</div></div>
+        </header>
+        <h1>\(escape(article.title))</h1>
+        """
+        if let excerpt = article.excerpt, !excerpt.isEmpty {
+            header += "<p class=\"lead\">\(escape(excerpt))</p>"
+        }
         if let image = article.featuredImageUrl {
             header += "<img class=\"cover\" src=\"\(escape(image))\" alt=\"\">"
         }
-        header += "<h1>\(escape(article.title))</h1>"
 
-        var meta: [String] = []
-        if let author = article.author?.name { meta.append(escape(author)) }
-        if let date = article.publishedAt { meta.append(escape(DateParsing.display.string(from: date))) }
-        if !meta.isEmpty {
-            header += "<div class=\"meta\">\(meta.joined(separator: " · "))</div>"
-        }
+        var footer = ""
         if let tags = article.tags, !tags.isEmpty {
             let links = tags.map {
                 "<a class=\"tag\" href=\"\(scheme)://tag/\(escape($0.slug))\">#\(escape($0.name))</a>"
             }
-            header += "<div class=\"tags\">\(links.joined(separator: " "))</div>"
+            footer += "<div class=\"tags\">\(links.joined())</div>"
         }
 
         let pollNote = "<div class=\"note\">Здесь на сайте встроен интерактивный опрос — "
@@ -194,9 +258,9 @@ enum ArticleHTML {
             .replacingOccurrences(of: "<div data-poll-slot></div>", with: pollNote)
 
         let count = article.commentCount ?? 0
-        let commentsButton = article.commentsEnabled == false && count == 0
-            ? ""
-            : "<a class=\"comments\" href=\"\(scheme)://comments\">Комментарии (\(count))</a>"
+        if article.commentsEnabled != false || count > 0 {
+            footer += "<a class=\"comments\" href=\"\(scheme)://comments\">Комментарии · \(count)</a>"
+        }
 
         return """
         <!DOCTYPE html>
@@ -210,7 +274,7 @@ enum ArticleHTML {
         <article>
         \(header)
         <div class="content">\(content)</div>
-        \(commentsButton)
+        \(footer)
         </article>
         </body>
         </html>
@@ -225,30 +289,41 @@ enum ArticleHTML {
     }
 
     private static let css = """
-    :root { color-scheme: light dark; --accent: #ce2956; --muted: #6b6b70; --border: rgba(127,127,127,.25); --code-bg: rgba(127,127,127,.12); }
-    @media (prefers-color-scheme: dark) { :root { --accent: #ff5c86; --muted: #9a9aa0; } }
-    html { -webkit-text-size-adjust: 100%; }
-    body { margin: 0; padding: 16px 18px calc(32px + env(safe-area-inset-bottom)); font: -apple-system-body; font-size: 18px; line-height: 1.6; word-wrap: break-word; }
-    h1 { font-size: 26px; line-height: 1.25; margin: 12px 0 8px; }
-    h2 { font-size: 22px; line-height: 1.3; margin: 28px 0 8px; }
-    h3, h4 { font-size: 19px; margin: 24px 0 6px; }
+    :root { color-scheme: light dark; --bg: #fff; --text: #000; --accent: #ce2956; --muted: #8a8a8e; --border: rgba(127,127,127,.25); --fill: rgba(118,118,128,.12); }
+    @media (prefers-color-scheme: dark) { :root { --bg: #000; --text: #fff; --accent: #ff5c86; --muted: #98989f; --fill: rgba(118,118,128,.24); } }
+    html { -webkit-text-size-adjust: 100%; background: var(--bg); }
+    body { margin: 0; padding: 8px 16px calc(110px + env(safe-area-inset-bottom)); background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; font-size: 18px; line-height: 1.55; word-wrap: break-word; }
     a { color: var(--accent); text-decoration: none; }
-    img, video, iframe { max-width: 100%; height: auto; border-radius: 10px; }
-    .cover { display: block; width: 100%; margin-bottom: 8px; }
-    .meta { color: var(--muted); font-size: 14px; }
-    .tags { margin-top: 6px; font-size: 14px; }
-    .tag { margin-right: 8px; }
-    .content { margin-top: 16px; }
-    blockquote { margin: 16px 0; padding: 4px 14px; border-left: 3px solid var(--accent); color: var(--muted); }
-    pre { background: var(--code-bg); padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 14px; line-height: 1.45; }
-    code { font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+    .author { display: flex; align-items: center; gap: 12px; margin: 4px 0 16px; }
+    .avatar { flex: none; width: 42px; height: 42px; border-radius: 50%; color: #fff; font: 600 18px/42px ui-rounded, -apple-system, sans-serif; text-align: center; background-image: linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,0)); }
+    .name { font-size: 17px; font-weight: 600; line-height: 1.3; }
+    .sub { font-size: 15px; line-height: 1.3; color: var(--muted); }
+    .sub > * { margin-right: 10px; }
+    .sub a { color: var(--text); }
+    h1 { font-size: 28px; line-height: 1.22; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 10px; }
+    .lead { font-size: 19px; line-height: 1.45; margin: 0 0 16px; }
+    .cover { display: block; width: 100%; margin: 6px 0 4px; border-radius: 14px; }
+    .content { margin-top: 18px; }
+    .content > :first-child { margin-top: 0; }
+    p { margin: 0 0 16px; }
+    h2 { font-size: 23px; line-height: 1.3; margin: 30px 0 10px; }
+    h3, h4 { font-size: 20px; line-height: 1.3; margin: 26px 0 8px; }
+    ul, ol { padding-left: 26px; margin: 0 0 16px; }
+    li { margin-bottom: 8px; }
+    li::marker { color: var(--muted); }
+    img, video, iframe { max-width: 100%; height: auto; border-radius: 14px; }
+    figure { margin: 20px 0; }
+    figcaption { color: var(--muted); font-size: 15px; margin-top: 8px; }
+    blockquote { margin: 20px 0; padding: 2px 0 2px 16px; border-left: 3px solid var(--accent); }
+    pre { background: var(--fill); padding: 14px; border-radius: 12px; overflow-x: auto; font-size: 14px; line-height: 1.45; }
+    code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; background: var(--fill); padding: 2px 5px; border-radius: 5px; }
     pre code { background: none; padding: 0; }
     table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 15px; }
     th, td { border: 1px solid var(--border); padding: 6px 8px; }
-    hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
-    figure { margin: 16px 0; }
-    figcaption { color: var(--muted); font-size: 14px; text-align: center; }
-    .note { margin: 16px 0; padding: 12px 14px; border-radius: 10px; background: var(--code-bg); font-size: 16px; }
-    .comments { display: block; margin: 32px 0 8px; padding: 14px; text-align: center; border-radius: 12px; background: var(--accent); color: #fff; font-weight: 600; font-size: 17px; }
+    hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+    .note { margin: 16px 0; padding: 14px 16px; border-radius: 14px; background: var(--fill); font-size: 16px; }
+    .tags { margin: 28px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+    .tag { padding: 6px 12px; border-radius: 999px; background: var(--fill); color: var(--text); font-size: 15px; }
+    .comments { display: block; margin: 24px 0 8px; padding: 14px; text-align: center; border-radius: 14px; background: var(--fill); color: var(--accent); font-weight: 600; font-size: 17px; }
     """
 }
