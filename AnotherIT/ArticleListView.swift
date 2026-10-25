@@ -51,7 +51,19 @@ final class ArticleListModel: ObservableObject {
     }
 }
 
+/// Feed metrics, taken from vc.ru's feed.
+enum FeedLayout {
+    static let margin: CGFloat = 8
+    static let cardSpacing: CGFloat = 8
+    static let cornerRadius: CGFloat = 22
+    static let padding: CGFloat = 16
+    static let avatarSize: CGFloat = 40
+    static let cardBackground = Color(.secondarySystemGroupedBackground)
+}
+
 struct ArticleListView: View {
+    private static let topAnchor = "top"
+
     @StateObject private var model: ArticleListModel
     @EnvironmentObject private var router: Router
 
@@ -60,46 +72,47 @@ struct ArticleListView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 12) {
-                let pinned = model.articles.filter { $0.isPinned == true }
-                if !pinned.isEmpty {
-                    PinnedCard(articles: pinned)
-                }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: FeedLayout.cardSpacing) {
+                    Color.clear.frame(height: 0).id(Self.topAnchor)
 
-                ForEach(model.articles.filter { $0.isPinned != true }) { article in
-                    ArticleCard(article: article)
-                        .onAppear {
-                            if article.id == model.articles.last?.id {
-                                Task { await model.loadNext() }
-                            }
-                        }
-                }
-
-                if model.isLoading || model.canLoadMore || model.error != nil {
-                    footer
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-        }
-        .background(Color(.systemGroupedBackground))
-        .navigationTitle(model.tag.map { "#\($0.name)" } ?? "Другое IT")
-        .toolbar {
-            if model.tag == nil, !model.tags.isEmpty {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        ForEach(model.tags) { tag in
-                            Button {
-                                router.push(.tag(tag))
-                            } label: {
-                                Text(tag.count.map { "\(tag.name) (\($0))" } ?? tag.name)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "number")
+                    let pinned = model.articles.filter { $0.isPinned == true }
+                    if !pinned.isEmpty {
+                        PinnedCard(articles: pinned)
                     }
-                    .accessibilityLabel("Теги")
+
+                    ForEach(model.articles.filter { $0.isPinned != true }) { article in
+                        ArticleCard(article: article)
+                            .onAppear {
+                                if article.id == model.articles.last?.id {
+                                    Task { await model.loadNext() }
+                                }
+                            }
+                    }
+
+                    if model.isLoading || model.canLoadMore || model.error != nil {
+                        footer
+                    }
+                }
+                .padding(.horizontal, FeedLayout.margin)
+                .padding(.vertical, 8)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle(model.tag.map { "#\($0.name)" } ?? "")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if model.tag == nil {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            withAnimation { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+                        } label: {
+                            Text("Другое IT")
+                                .font(.headline)
+                                .padding(.horizontal, 6)
+                        }
+                        .accessibilityHint("Прокрутить ленту наверх")
+                    }
                 }
             }
         }
@@ -124,7 +137,7 @@ struct ArticleListView: View {
                             if model.articles.isEmpty { await model.reload() } else { await model.loadNext() }
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                 }
             } else {
                 ProgressView()
@@ -134,65 +147,82 @@ struct ArticleListView: View {
             }
             Spacer()
         }
-        .padding(.vertical, 16)
+        .padding(.vertical, 24)
     }
 }
 
-enum FeedStyle {
-    static let cornerRadius: CGFloat = 24
-    static let cardBackground = Color(.secondarySystemGroupedBackground)
-}
-
-/// Pinned articles are kept compact: one card with just their titles.
+/// Pinned articles are kept compact, like vc.ru's digest card: titles with
+/// their comment counts, the rest behind "Показать ещё".
 struct PinnedCard: View {
+    private static let collapsedCount = 3
+
     let articles: [ArticleSummary]
     @EnvironmentObject private var router: Router
     @ObservedObject private var seen = SeenComments.shared
+    @State private var expanded = false
+
+    private var shown: [ArticleSummary] {
+        expanded ? articles : Array(articles.prefix(Self.collapsedCount))
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 14) {
             Label("Закреплённое", systemImage: "pin.fill")
-                .font(.footnote.weight(.semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .padding(.bottom, 4)
 
-            ForEach(articles) { article in
+            ForEach(shown) { article in
                 Button {
                     router.push(.article(path: article.url))
                 } label: {
-                    HStack(spacing: 12) {
-                        Text(article.title)
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                        let newComments = seen.newCount(articleId: article.id, commentCount: article.commentCount)
-                        if newComments > 0 {
-                            Text("+\(newComments)")
-                                .font(.subheadline.weight(.semibold))
-                                .monospacedDigit()
-                                .foregroundColor(.accentColor)
-                        }
-                        Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.tertiary)
+                    title(article)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if articles.count > Self.collapsedCount {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(expanded ? "Свернуть" : "Показать ещё")
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.subheadline.weight(.semibold))
                     }
-                    .padding(.vertical, 12)
+                    .font(.body.weight(.medium))
+                    .frame(minHeight: 32)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-
-                if article.id != articles.last?.id {
-                    Divider()
-                }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 4)
-        .background(FeedStyle.cardBackground,
-                    in: RoundedRectangle(cornerRadius: FeedStyle.cornerRadius, style: .continuous))
+        .padding(FeedLayout.padding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(FeedLayout.cardBackground,
+                    in: RoundedRectangle(cornerRadius: FeedLayout.cornerRadius, style: .continuous))
+    }
+
+    private func title(_ article: ArticleSummary) -> Text {
+        let newComments = seen.newCount(articleId: article.id, commentCount: article.commentCount)
+        let title = Text(article.title)
+            .font(.body.weight(.medium))
+            .foregroundColor(.primary)
+        let icon = Text(Image(systemName: "bubble.left"))
+            .font(.subheadline)
+            .foregroundColor(.secondary)
+        let count = Text(" \(article.commentCount ?? 0)")
+            .font(.subheadline)
+            .foregroundColor(.secondary)
+        var text = title + Text("  ") + icon + count
+        if newComments > 0 {
+            let badge = Text(" +\(newComments)")
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.accentColor)
+            text = text + badge
+        }
+        return text
     }
 }
 
@@ -208,20 +238,23 @@ struct ArticleCard: View {
     private var newComments: Int { seen.newCount(articleId: article.id, commentCount: article.commentCount) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             header
+                .padding(.bottom, 14)
 
             Text(article.title)
-                .font(.title2.weight(.bold))
+                .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 10)
 
             if let excerpt = article.excerpt, !excerpt.isEmpty {
                 Text(excerpt)
                     .font(.body)
                     .foregroundStyle(.primary)
-                    .lineSpacing(2)
-                    .lineLimit(5)
+                    .lineSpacing(3)
+                    .lineLimit(4)
+                    .padding(.bottom, 12)
             }
 
             if let image = article.featuredImageUrl, let url = URL(string: image) {
@@ -236,32 +269,35 @@ struct ArticleCard: View {
                             }
                         }
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .padding(.top, 2)
+                    .padding(.bottom, 8)
             }
 
             actions
         }
-        .padding(16)
-        .background(FeedStyle.cardBackground,
-                    in: RoundedRectangle(cornerRadius: FeedStyle.cornerRadius, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: FeedStyle.cornerRadius, style: .continuous))
+        .padding(.horizontal, FeedLayout.padding)
+        .padding(.top, FeedLayout.padding)
+        .padding(.bottom, 6)
+        .background(FeedLayout.cardBackground,
+                    in: RoundedRectangle(cornerRadius: FeedLayout.cornerRadius, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: FeedLayout.cornerRadius, style: .continuous))
         .onTapGesture {
             router.push(.article(path: article.url))
         }
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             AvatarView(name: authorName, color: AuthorColor.color(seed: authorSlug, isBot: isBot),
-                       isAnonymous: false, isBot: isBot, size: 40)
+                       isAnonymous: false, isBot: isBot, size: FeedLayout.avatarSize)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(authorName)
                     .font(.body.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     if let tag = article.tags?.first {
                         Button {
                             router.push(.tag(tag))
@@ -285,7 +321,7 @@ struct ArticleCard: View {
                     Label("Поделиться", systemImage: "square.and.arrow.up")
                 }
                 Button {
-                    router.push(.comments(path: article.url, title: article.title, articleId: article.id))
+                    router.push(.comments(path: article.url))
                 } label: {
                     Label("Комментарии", systemImage: "bubble.left")
                 }
@@ -300,19 +336,21 @@ struct ArticleCard: View {
                 Image(systemName: "ellipsis")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.primary)
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
+            .padding(.trailing, -10)
         }
     }
 
     private var actions: some View {
-        HStack(spacing: 28) {
+        HStack(spacing: 26) {
             Button {
-                router.push(.comments(path: article.url, title: article.title, articleId: article.id))
+                router.push(.comments(path: article.url))
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "bubble.left")
+                        .font(.system(size: 20))
                     Text("\(article.commentCount ?? 0)").monospacedDigit()
                     if newComments > 0 {
                         Text("+\(newComments)")
@@ -320,14 +358,15 @@ struct ArticleCard: View {
                             .foregroundColor(.accentColor)
                     }
                 }
-                .frame(minHeight: 36)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .accessibilityLabel("Комментарии: \(article.commentCount ?? 0)")
 
             ShareLink(item: link) {
                 Image(systemName: "arrowshape.turn.up.right")
-                    .frame(minHeight: 36)
+                    .font(.system(size: 20))
+                    .frame(minWidth: 32, minHeight: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Поделиться")
@@ -335,7 +374,70 @@ struct ArticleCard: View {
             Spacer()
         }
         .buttonStyle(.plain)
-        .font(.title3)
+        .font(.body)
         .foregroundStyle(.primary)
+    }
+}
+
+/// All site tags, most used first, with search.
+struct TagsView: View {
+    @EnvironmentObject private var router: Router
+    @State private var tags: [Tag] = []
+    @State private var query = ""
+    @State private var error: String?
+
+    private var filtered: [Tag] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return tags }
+        return tags.filter { $0.name.localizedCaseInsensitiveContains(q) }
+    }
+
+    var body: some View {
+        Group {
+            if tags.isEmpty, let error {
+                ErrorView(message: error) {
+                    Task { await load() }
+                }
+            } else if tags.isEmpty {
+                ProgressView()
+            } else {
+                List(filtered) { tag in
+                    Button {
+                        router.push(.tag(tag))
+                    } label: {
+                        HStack {
+                            Text("#\(tag.name)")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if let count = tag.count {
+                                Text("\(count)")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.insetGrouped)
+                .searchable(text: $query, prompt: "Поиск тегов")
+            }
+        }
+        .navigationTitle("Теги")
+        .task {
+            if tags.isEmpty { await load() }
+        }
+        .refreshable { await load() }
+    }
+
+    private func load() async {
+        do {
+            let page = try await APIClient.shared.articles(page: 1, tag: nil)
+            tags = page.props.allTags.sorted { ($0.count ?? 0) > ($1.count ?? 0) }
+            error = nil
+        } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+            self.error = error.localizedDescription
+        }
     }
 }

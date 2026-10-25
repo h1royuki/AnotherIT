@@ -24,75 +24,174 @@ final class ArticleModel: ObservableObject {
     }
 }
 
+/// The article followed by its comments on one page, as on vc.ru.
 struct ArticleView: View {
+    private static let commentsAnchor = "comments"
+
+    let focusComments: Bool
     @StateObject private var model: ArticleModel
+    @StateObject private var comments: CommentsModel
     @EnvironmentObject private var router: Router
     @ObservedObject private var seen = SeenComments.shared
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var webHeight: CGFloat = 0
+    @State private var highlighted: Int?
+    @State private var viewerImage: ViewerImage?
+    @State private var didFocus = false
 
-    init(path: String) {
+    init(path: String, focusComments: Bool = false) {
+        self.focusComments = focusComments
         _model = StateObject(wrappedValue: ArticleModel(path: path))
+        _comments = StateObject(wrappedValue: CommentsModel(path: path))
     }
 
     var body: some View {
         Group {
             if let article = model.article {
-                ArticleWebView(html: ArticleHTML.render(article)) { url in
-                    handleLink(url, article: article)
-                }
-                .ignoresSafeArea(edges: .bottom)
+                page(article)
             } else if let error = model.error {
                 ErrorView(message: error) {
-                    Task { await model.load() }
+                    Task { await load() }
                 }
             } else {
                 ProgressView()
             }
         }
-        .overlay(alignment: .bottom) {
-            if let article = model.article {
-                actionBar(article)
-            }
-        }
+        .background(Color(.systemBackground))
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if let article = model.article {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        ShareLink(item: SiteLinks.absolute(article.url)) {
-                            Label("Поделиться", systemImage: "square.and.arrow.up")
-                        }
-                        Button {
-                            UIPasteboard.general.url = SiteLinks.absolute(article.url)
-                        } label: {
-                            Label("Скопировать ссылку", systemImage: "link")
-                        }
-                        Button {
-                            openURL(SiteLinks.absolute(article.url))
-                        } label: {
-                            Label("Открыть в Safari", systemImage: "safari")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                }
-            }
+        .toolbar { toolbar }
+        .fullScreenCover(item: $viewerImage) { image in
+            ImageViewer(url: image.url)
         }
         .task {
-            if model.article == nil { await model.load() }
+            if model.article == nil { await load() }
+        }
+        // Like the site, the visit is recorded when leaving the page.
+        .onDisappear { comments.markAllSeen() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { comments.markAllSeen() }
         }
     }
 
-    /// Floating capsule with the article actions, like vc.ru.
-    private func actionBar(_ article: Article) -> some View {
-        let newComments = seen.newCount(articleId: article.id, commentCount: article.commentCount)
-        return HStack(spacing: 26) {
+    private func load() async {
+        await model.load()
+        guard let article = model.article else { return }
+        comments.articleId = article.id
+        await comments.load()
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        if let article = model.article {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Picker("Сортировка комментариев", selection: $comments.sort) {
+                        ForEach(CommentSort.allCases) { sort in
+                            Label(sort.rawValue, systemImage: sort.icon).tag(sort)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease")
+                }
+                .accessibilityLabel("Сортировка комментариев")
+
+                Menu {
+                    ShareLink(item: SiteLinks.absolute(article.url)) {
+                        Label("Поделиться", systemImage: "square.and.arrow.up")
+                    }
+                    Button {
+                        UIPasteboard.general.url = SiteLinks.absolute(article.url)
+                    } label: {
+                        Label("Скопировать ссылку", systemImage: "link")
+                    }
+                    Button {
+                        openURL(SiteLinks.absolute(article.url))
+                    } label: {
+                        Label("Открыть в Safari", systemImage: "safari")
+                    }
+                    Divider()
+                    Button {
+                        withAnimation { comments.collapseAll() }
+                    } label: {
+                        Label("Свернуть все ветки", systemImage: "rectangle.compress.vertical")
+                    }
+                    Button {
+                        withAnimation { comments.collapsed = [] }
+                    } label: {
+                        Label("Развернуть все ветки", systemImage: "rectangle.expand.vertical")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+            }
+        }
+    }
+
+    private func page(_ article: Article) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ArticleWebView(html: ArticleHTML.render(article), height: $webHeight) { url in
+                        handleLink(url, article: article, proxy: proxy)
+                    }
+                    .frame(height: max(webHeight, 1))
+
+                    if webHeight == 0 {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 40)
+                    }
+
+                    actionRow(article, proxy: proxy)
+                        .id(Self.commentsAnchor)
+
+                    commentsSection(proxy: proxy)
+                }
+                .padding(.bottom, comments.newIds.isEmpty ? 32 : 96)
+            }
+            .refreshable { await load() }
+            .overlay(alignment: .bottom) {
+                if comments.loaded, !comments.newIds.isEmpty {
+                    newCommentsPill(proxy: proxy)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .environment(\.openURL, OpenURLAction { url in
+                if url.scheme == CommentMarkdown.commentScheme, let id = Int(url.host ?? "") {
+                    jump(to: id, proxy: proxy)
+                    return .handled
+                }
+                return router.handle(url) ? .handled : .systemAction
+            })
+            .onChange(of: comments.loaded) { focusIfNeeded(proxy: proxy) }
+            .onChange(of: webHeight) { focusIfNeeded(proxy: proxy) }
+        }
+    }
+
+    /// Opening from a comments button lands on the comments, once the page
+    /// has its height and the comments are in.
+    private func focusIfNeeded(proxy: ScrollViewProxy) {
+        guard focusComments, !didFocus, comments.loaded, webHeight > 0 else { return }
+        didFocus = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            proxy.scrollTo(Self.commentsAnchor, anchor: .top)
+        }
+    }
+
+    /// vc-style counters under the article text.
+    private func actionRow(_ article: Article, proxy: ScrollViewProxy) -> some View {
+        let newComments = comments.loaded
+            ? comments.newIds.count
+            : seen.newCount(articleId: article.id, commentCount: article.commentCount)
+        return HStack(spacing: 28) {
             Button {
-                openComments(article)
+                withAnimation { proxy.scrollTo(Self.commentsAnchor, anchor: .top) }
             } label: {
-                HStack(spacing: 7) {
+                HStack(spacing: 6) {
                     Image(systemName: "bubble.left")
+                        .font(.system(size: 21))
                     Text("\(article.commentCount ?? 0)").monospacedDigit()
                     if newComments > 0 {
                         Text("+\(newComments)")
@@ -107,30 +206,118 @@ struct ArticleView: View {
 
             ShareLink(item: SiteLinks.absolute(article.url)) {
                 Image(systemName: "arrowshape.turn.up.right")
+                    .font(.system(size: 21))
                     .frame(minWidth: 32, minHeight: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Поделиться")
+
+            Spacer()
         }
         .buttonStyle(.plain)
-        .font(.title3)
+        .font(.body)
         .foregroundStyle(.primary)
-        .padding(.horizontal, 24)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
     }
 
-    private func openComments(_ article: Article) {
-        router.push(.comments(path: article.url, title: article.title, articleId: article.id))
+    @ViewBuilder
+    private func commentsSection(proxy: ScrollViewProxy) -> some View {
+        if !comments.loaded {
+            if let error = comments.error {
+                ErrorView(message: error) {
+                    Task { await comments.load() }
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 32)
+            }
+        } else if comments.threads.isEmpty {
+            Text("Комментариев пока нет")
+                .foregroundStyle(.secondary)
+                .padding(16)
+        } else {
+            ForEach(comments.sortedThreads) { thread in
+                ForEach(comments.lines(for: thread)) { line in
+                    CommentRow(line: line,
+                               isCollapsed: comments.collapsed.contains(line.id),
+                               isHighlighted: highlighted == line.id,
+                               isNew: comments.newIds.contains(line.id),
+                               newReplies: comments.newReplies[line.id] ?? 0,
+                               commentURL: commentURL(line.id),
+                               onToggle: { withAnimation(.easeInOut(duration: 0.25)) { comments.toggle(line.id) } },
+                               onParent: { parent in jump(to: parent, proxy: proxy) },
+                               onImage: { viewerImage = ViewerImage(url: $0) })
+                        .id(line.id)
+                }
+            }
+        }
     }
 
-    private func handleLink(_ url: URL, article: Article) {
+    /// Floating Liquid Glass capsule: tap to step through new comments,
+    /// the cross marks them all as read.
+    private func newCommentsPill(proxy: ScrollViewProxy) -> some View {
+        HStack(spacing: 0) {
+            Button {
+                if let id = comments.stepNew(by: 1) { jump(to: id, proxy: proxy) }
+            } label: {
+                Text(comments.remainingNew > 0
+                     ? Plural.newComments(comments.remainingNew)
+                     : "Все новые просмотрены")
+                    .font(.body.weight(.semibold))
+                    .monospacedDigit()
+                    .padding(.leading, 20)
+                    .padding(.trailing, 8)
+                    .frame(minHeight: 48)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityHint("Перейти к следующему новому комментарию")
+
+            Button {
+                withAnimation { comments.markAllSeen(clearHighlights: true) }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 48)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Отметить все прочитанными")
+            .padding(.trailing, 6)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .padding(.bottom, 12)
+    }
+
+    private func commentURL(_ id: Int) -> URL {
+        let base = SiteLinks.absolute(comments.path)
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        components?.fragment = "comment-\(id)"
+        return components?.url ?? base
+    }
+
+    private func jump(to id: Int, proxy: ScrollViewProxy) {
+        guard comments.reveal(id) else { return }
+        DispatchQueue.main.async {
+            withAnimation { proxy.scrollTo(id, anchor: .center) }
+            highlighted = id
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                if highlighted == id {
+                    withAnimation { highlighted = nil }
+                }
+            }
+        }
+    }
+
+    private func handleLink(_ url: URL, article: Article, proxy: ScrollViewProxy) {
         if url.scheme == ArticleHTML.scheme {
             switch url.host {
             case "comments":
-                openComments(article)
+                withAnimation { proxy.scrollTo(Self.commentsAnchor, anchor: .top) }
             case "tag":
                 let slug = url.lastPathComponent
                 let name = article.tags?.first(where: { $0.slug == slug })?.name ?? slug
@@ -159,15 +346,31 @@ struct ErrorView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             Button("Повторить", action: retry)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
         }
         .padding()
     }
 }
 
+/// Non-scrolling web view that reports its content height, so the article
+/// text can sit inside the native scroll view above the comments.
 struct ArticleWebView: UIViewRepresentable {
     let html: String
+    @Binding var height: CGFloat
     let onLink: (URL) -> Void
+
+    private static let heightScript = """
+    (function () {
+      function post() {
+        window.webkit.messageHandlers.height.postMessage(
+          Math.ceil(document.documentElement.getBoundingClientRect().height));
+      }
+      new ResizeObserver(post).observe(document.documentElement);
+      document.querySelectorAll('img').forEach(function (img) { img.addEventListener('load', post); });
+      window.addEventListener('load', post);
+      post();
+    })();
+    """
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -176,26 +379,49 @@ struct ArticleWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.dataDetectorTypes = [.link]
+        let controller = config.userContentController
+        controller.addUserScript(WKUserScript(source: Self.heightScript,
+                                              injectionTime: .atDocumentEnd,
+                                              forMainFrameOnly: true))
+        controller.add(WeakScriptHandler(context.coordinator), name: "height")
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.isOpaque = false
-        webView.backgroundColor = .systemBackground
-        webView.scrollView.backgroundColor = .systemBackground
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.allowsLinkPreview = false
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.onLink = onLink
+        context.coordinator.onHeight = { value in
+            if abs(value - height) > 0.5 { height = value }
+        }
         if context.coordinator.loadedHTML != html {
             context.coordinator.loadedHTML = html
             webView.loadHTMLString(html, baseURL: APIClient.baseURL)
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "height")
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var onLink: ((URL) -> Void)?
+        var onHeight: ((CGFloat) -> Void)?
         var loadedHTML: String?
+
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage) {
+            guard let value = message.body as? NSNumber else { return }
+            onHeight?(CGFloat(truncating: value))
+        }
 
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
@@ -216,6 +442,20 @@ struct ArticleWebView: UIViewRepresentable {
             }
             decisionHandler(.allow)
         }
+    }
+}
+
+/// Breaks the retain cycle between WKUserContentController and the coordinator.
+private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+
+    init(_ target: WKScriptMessageHandler) {
+        self.target = target
+    }
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        target?.userContentController(userContentController, didReceive: message)
     }
 }
 
@@ -264,17 +504,12 @@ enum ArticleHTML {
         let content = (article.contentHtml ?? "")
             .replacingOccurrences(of: "<div data-poll-slot></div>", with: pollNote)
 
-        let count = article.commentCount ?? 0
-        if article.commentsEnabled != false || count > 0 {
-            footer += "<a class=\"comments\" href=\"\(scheme)://comments\">Комментарии · \(count)</a>"
-        }
-
         return """
         <!DOCTYPE html>
         <html lang="ru">
         <head>
         <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
         <style>\(css)</style>
         </head>
         <body>
@@ -295,33 +530,35 @@ enum ArticleHTML {
             .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
+    /// Sizes follow vc.ru's article page; colors follow the system palette.
     private static let css = """
-    :root { color-scheme: light dark; --bg: #fff; --text: #000; --accent: #ce2956; --muted: #8a8a8e; --border: rgba(127,127,127,.25); --fill: rgba(118,118,128,.12); }
-    @media (prefers-color-scheme: dark) { :root { --bg: #000; --text: #fff; --accent: #ff5c86; --muted: #98989f; --fill: rgba(118,118,128,.24); } }
-    html { -webkit-text-size-adjust: 100%; background: var(--bg); }
-    body { margin: 0; padding: 8px 16px calc(110px + env(safe-area-inset-bottom)); background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; font-size: 18px; line-height: 1.55; word-wrap: break-word; }
+    :root { color-scheme: light dark; --text: #000; --accent: #007aff; --muted: #8a8a8e; --border: rgba(127,127,127,.25); --fill: rgba(118,118,128,.12); }
+    @media (prefers-color-scheme: dark) { :root { --text: #fff; --accent: #0a84ff; --muted: #98989f; --fill: rgba(118,118,128,.24); } }
+    html { -webkit-text-size-adjust: 100%; background: transparent; }
+    body { margin: 0; padding: 12px 16px 8px; background: transparent; color: var(--text); font-family: -apple-system, system-ui, sans-serif; font-size: 17px; line-height: 1.5; word-wrap: break-word; -webkit-tap-highlight-color: transparent; }
     a { color: var(--accent); text-decoration: none; }
-    .author { display: flex; align-items: center; gap: 12px; margin: 4px 0 16px; }
-    .avatar { flex: none; width: 42px; height: 42px; border-radius: 50%; color: #fff; font: 600 18px/42px ui-rounded, -apple-system, sans-serif; text-align: center; background-image: linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,0)); }
-    .name { font-size: 17px; font-weight: 600; line-height: 1.3; }
-    .sub { font-size: 15px; line-height: 1.3; color: var(--muted); }
+    .author { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; }
+    .avatar { flex: none; width: 40px; height: 40px; border-radius: 50%; color: #fff; font: 600 17px/40px ui-rounded, -apple-system, sans-serif; text-align: center; background-image: linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,0)); }
+    .name { font-size: 17px; font-weight: 500; line-height: 1.3; }
+    .sub { font-size: 15px; line-height: 1.35; color: var(--muted); }
     .sub > * { margin-right: 10px; }
     .sub a { color: var(--text); }
-    h1 { font-size: 28px; line-height: 1.22; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 10px; }
-    .lead { font-size: 19px; line-height: 1.45; margin: 0 0 16px; }
-    .cover { display: block; width: 100%; margin: 6px 0 4px; border-radius: 14px; }
+    h1 { font-size: 24px; line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 8px; }
+    .lead { font-size: 17px; line-height: 1.45; margin: 0 0 16px; }
+    .cover { display: block; width: 100%; margin: 8px 0 4px; border-radius: 14px; }
     .content { margin-top: 18px; }
     .content > :first-child { margin-top: 0; }
-    p { margin: 0 0 16px; }
-    h2 { font-size: 23px; line-height: 1.3; margin: 30px 0 10px; }
-    h3, h4 { font-size: 20px; line-height: 1.3; margin: 26px 0 8px; }
-    ul, ol { padding-left: 26px; margin: 0 0 16px; }
+    p { margin: 0 0 14px; }
+    h2 { font-size: 21px; line-height: 1.3; margin: 28px 0 10px; }
+    h3, h4 { font-size: 19px; line-height: 1.3; margin: 24px 0 8px; }
+    strong, b { font-weight: 600; }
+    ul, ol { padding-left: 24px; margin: 0 0 14px; }
     li { margin-bottom: 8px; }
     li::marker { color: var(--muted); }
     img, video, iframe { max-width: 100%; height: auto; border-radius: 14px; }
     figure { margin: 20px 0; }
     figcaption { color: var(--muted); font-size: 15px; margin-top: 8px; }
-    blockquote { margin: 20px 0; padding: 2px 0 2px 16px; border-left: 3px solid var(--accent); }
+    blockquote { margin: 18px 0; padding: 2px 0 2px 14px; border-left: 3px solid var(--accent); }
     pre { background: var(--fill); padding: 14px; border-radius: 12px; overflow-x: auto; font-size: 14px; line-height: 1.45; }
     code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; background: var(--fill); padding: 2px 5px; border-radius: 5px; }
     pre code { background: none; padding: 0; }
@@ -329,8 +566,7 @@ enum ArticleHTML {
     th, td { border: 1px solid var(--border); padding: 6px 8px; }
     hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
     .note { margin: 16px 0; padding: 14px 16px; border-radius: 14px; background: var(--fill); font-size: 16px; }
-    .tags { margin: 28px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+    .tags { margin: 22px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
     .tag { padding: 6px 12px; border-radius: 999px; background: var(--fill); color: var(--text); font-size: 15px; }
-    .comments { display: block; margin: 24px 0 8px; padding: 14px; text-align: center; border-radius: 14px; background: var(--fill); color: var(--accent); font-weight: 600; font-size: 17px; }
     """
 }

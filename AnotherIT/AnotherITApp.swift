@@ -2,8 +2,6 @@ import SwiftUI
 
 @main
 struct AnotherITApp: App {
-    @StateObject private var router = Router()
-
     init() {
         URLCache.shared = URLCache(memoryCapacity: 64 * 1024 * 1024,
                                    diskCapacity: 512 * 1024 * 1024)
@@ -11,28 +9,50 @@ struct AnotherITApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack(path: $router.path) {
-                ArticleListView(tag: nil)
-                    .navigationDestination(for: Route.self) { route in
-                        switch route {
-                        case .article(let path):
-                            ArticleView(path: path)
-                        case .comments(let path, let title, let articleId):
-                            CommentsView(path: path, title: title, articleId: articleId)
-                        case .tag(let tag):
-                            ArticleListView(tag: tag)
-                        }
+            TabView {
+                Tab("Лента", systemImage: "house") {
+                    RoutedStack {
+                        ArticleListView(tag: nil)
                     }
+                }
+                Tab("Теги", systemImage: "number") {
+                    RoutedStack {
+                        TagsView()
+                    }
+                }
             }
-            .environmentObject(router)
+            .tabBarMinimizeBehavior(.onScrollDown)
         }
     }
 }
 
 enum Route: Hashable {
     case article(path: String)
-    case comments(path: String, title: String, articleId: Int)
+    case comments(path: String)
     case tag(Tag)
+}
+
+/// A navigation stack with its own router, one per tab.
+struct RoutedStack<Root: View>: View {
+    @StateObject private var router = Router()
+    @ViewBuilder let root: () -> Root
+
+    var body: some View {
+        NavigationStack(path: $router.path) {
+            root()
+                .navigationDestination(for: Route.self) { route in
+                    switch route {
+                    case .article(let path):
+                        ArticleView(path: path)
+                    case .comments(let path):
+                        ArticleView(path: path, focusComments: true)
+                    case .tag(let tag):
+                        ArticleListView(tag: tag)
+                    }
+                }
+        }
+        .environmentObject(router)
+    }
 }
 
 final class Router: ObservableObject {

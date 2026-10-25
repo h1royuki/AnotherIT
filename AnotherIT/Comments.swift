@@ -78,12 +78,12 @@ final class CommentsModel: ObservableObject {
     private(set) var newReplies: [Int: Int] = [:]
 
     let path: String
-    let articleId: Int
+    /// Set once the article is loaded; needed to remember what was seen.
+    var articleId: Int?
     private let seen = SeenComments.shared
 
-    init(path: String, articleId: Int) {
+    init(path: String) {
         self.path = path
-        self.articleId = articleId
     }
 
     var remainingNew: Int { newIds.subtracting(visitedNew).count }
@@ -112,7 +112,7 @@ final class CommentsModel: ObservableObject {
     /// Records every loaded comment as seen. With `clearHighlights` the new
     /// comment marks disappear right away (the "mark as read" button).
     func markAllSeen(clearHighlights: Bool = false) {
-        guard loaded else { return }
+        guard loaded, let articleId else { return }
         let ids = threads.flatMap { [$0.root.id] + $0.replies.map(\.id) }
         seen.markSeen(articleId: articleId, lastSeenId: ids.max() ?? 0, commentCount: ids.count)
         if clearHighlights {
@@ -124,6 +124,7 @@ final class CommentsModel: ObservableObject {
     }
 
     private func updateNewComments() {
+        guard let articleId else { return }
         let ids = threads.flatMap { [$0.root.id] + $0.replies.map(\.id) }
         guard let record = seen.record(for: articleId) else {
             // First visit: nothing is new, remember everything as seen.
@@ -206,17 +207,15 @@ final class CommentsModel: ObservableObject {
         }
     }
 
-    static let maxLevel = 3
-
     /// Visible comments of a thread prepared for drawing.
     func lines(for thread: CommentThread) -> [CommentLine] {
         let items = [thread.root] + visibleReplies(of: thread)
-        let levels = items.map { min($0.depth, Self.maxLevel) }
+        let levels = items.map { min($0.depth, CommentLayout.maxLevel) }
         var result: [CommentLine] = []
         result.reserveCapacity(items.count)
         // Walk backwards: a level's line continues past a row when a later
         // sibling at that level comes before the thread climbs above it.
-        var pending = [Bool](repeating: false, count: Self.maxLevel + 2)
+        var pending = [Bool](repeating: false, count: CommentLayout.maxLevel + 2)
         for i in items.indices.reversed() {
             let level = levels[i]
             let continues = Array(pending[0...level])
@@ -289,212 +288,6 @@ final class CommentsModel: ObservableObject {
     }
 }
 
-struct CommentsView: View {
-    let title: String
-    let path: String
-    @StateObject private var model: CommentsModel
-    @EnvironmentObject private var router: Router
-    @State private var highlighted: Int?
-    @State private var viewerImage: ViewerImage?
-    @Environment(\.scenePhase) private var scenePhase
-
-    init(path: String, title: String, articleId: Int) {
-        self.title = title
-        self.path = path
-        _model = StateObject(wrappedValue: CommentsModel(path: path, articleId: articleId))
-    }
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            Group {
-                if model.loaded {
-                    feed(proxy: proxy)
-                } else if let error = model.error {
-                    ErrorView(message: error) {
-                        Task { await model.load() }
-                    }
-                } else {
-                    ProgressView()
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if model.loaded, !model.newIds.isEmpty {
-                    newCommentsPanel(proxy: proxy)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .environment(\.openURL, OpenURLAction { url in
-                if url.scheme == CommentMarkdown.commentScheme, let id = Int(url.host ?? "") {
-                    jump(to: id, proxy: proxy)
-                    return .handled
-                }
-                return router.handle(url) ? .handled : .systemAction
-            })
-        }
-        .background(Color(.systemBackground))
-        .navigationTitle("Комментарии")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if model.loaded, !model.threads.isEmpty {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    Menu {
-                        Picker("Сортировка", selection: $model.sort) {
-                            ForEach(CommentSort.allCases) { sort in
-                                Label(sort.rawValue, systemImage: sort.icon).tag(sort)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease")
-                    }
-                    .accessibilityLabel("Сортировка")
-
-                    Menu {
-                        Button {
-                            withAnimation { model.collapseAll() }
-                        } label: {
-                            Label("Свернуть все ветки", systemImage: "rectangle.compress.vertical")
-                        }
-                        Button {
-                            withAnimation { model.collapsed = [] }
-                        } label: {
-                            Label("Развернуть все", systemImage: "rectangle.expand.vertical")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                }
-            }
-        }
-        .fullScreenCover(item: $viewerImage) { image in
-            ImageViewer(url: image.url)
-        }
-        .task {
-            if !model.loaded { await model.load() }
-        }
-        // Like the site, the visit is recorded when leaving the comments.
-        .onDisappear { model.markAllSeen() }
-        .onChange(of: scenePhase) { phase in
-            if phase == .background { model.markAllSeen() }
-        }
-    }
-
-    private var subtitle: Text {
-        let base = Text("\(Plural.comments(model.totalCount)) · \(model.sort.rawValue.lowercased())")
-        guard !model.newIds.isEmpty else { return base }
-        return base + Text(" · \(Plural.newComments(model.newIds.count))")
-            .foregroundColor(.accentColor)
-            .fontWeight(.semibold)
-    }
-
-    /// Floating navigator through comments added since the last visit.
-    private func newCommentsPanel(proxy: ScrollViewProxy) -> some View {
-        HStack(spacing: 0) {
-            Text(model.remainingNew > 0 ? Plural.newComments(model.remainingNew) : "Все новые просмотрены")
-                .font(.subheadline.weight(.semibold))
-                .monospacedDigit()
-                .padding(.leading, 18)
-                .padding(.trailing, 8)
-
-            Button {
-                if let id = model.stepNew(by: -1) { jump(to: id, proxy: proxy) }
-            } label: {
-                Image(systemName: "chevron.up")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Предыдущий новый")
-
-            Button {
-                if let id = model.stepNew(by: 1) { jump(to: id, proxy: proxy) }
-            } label: {
-                Image(systemName: "chevron.down")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Следующий новый")
-
-            Divider().frame(height: 22)
-
-            Button {
-                withAnimation { model.markAllSeen(clearHighlights: true) }
-            } label: {
-                Image(systemName: "checkmark")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Отметить все прочитанными")
-            .padding(.trailing, 4)
-        }
-        .font(.body.weight(.semibold))
-        .buttonStyle(.plain)
-        .foregroundStyle(.primary)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-        .padding(.bottom, 8)
-    }
-
-    private func feed(proxy: ScrollViewProxy) -> some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(title)
-                        .font(.title2.weight(.bold))
-                        .fixedSize(horizontal: false, vertical: true)
-                    subtitle
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
-
-                if model.threads.isEmpty {
-                    Text("Комментариев пока нет")
-                        .foregroundStyle(.secondary)
-                        .padding(16)
-                }
-
-                ForEach(model.sortedThreads) { thread in
-                    ForEach(model.lines(for: thread)) { line in
-                        CommentRow(line: line,
-                                   isCollapsed: model.collapsed.contains(line.id),
-                                   isHighlighted: highlighted == line.id,
-                                   isNew: model.newIds.contains(line.id),
-                                   newReplies: model.newReplies[line.id] ?? 0,
-                                   commentURL: commentURL(line.id),
-                                   onToggle: { withAnimation(.easeInOut(duration: 0.25)) { model.toggle(line.id) } },
-                                   onParent: { parent in jump(to: parent, proxy: proxy) },
-                                   onImage: { viewerImage = ViewerImage(url: $0) })
-                            .id(line.id)
-                    }
-                }
-            }
-            .padding(.bottom, model.newIds.isEmpty ? 24 : 90)
-        }
-        .refreshable { await model.load() }
-    }
-
-    private func commentURL(_ id: Int) -> URL {
-        var components = URLComponents(url: SiteLinks.absolute(path), resolvingAgainstBaseURL: false)
-        components?.fragment = "comment-\(id)"
-        return components?.url ?? SiteLinks.absolute(path)
-    }
-
-    private func jump(to id: Int, proxy: ScrollViewProxy) {
-        guard model.reveal(id) else { return }
-        DispatchQueue.main.async {
-            withAnimation { proxy.scrollTo(id, anchor: .top) }
-            highlighted = id
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                if highlighted == id {
-                    withAnimation { highlighted = nil }
-                }
-            }
-        }
-    }
-}
-
 enum Plural {
     static func form(_ n: Int, _ one: String, _ few: String, _ many: String) -> String {
         let mod10 = n % 10, mod100 = n % 100
@@ -516,14 +309,17 @@ enum Plural {
     }
 }
 
+/// Comment metrics, taken from vc.ru's comment layout.
 enum CommentLayout {
-    static let indent: CGFloat = 22
-    static let lineX: CGFloat = 3
-    static let topPadding: CGFloat = 14
-    static let rootTopPadding: CGFloat = 22
-    static let bottomPadding: CGFloat = 10
+    static let maxLevel = 3
+    static let indent: CGFloat = 20
+    static let avatarSize: CGFloat = 36
     static let horizontalPadding: CGFloat = 16
-    static let avatarSize: CGFloat = 38
+    static let topPadding: CGFloat = 16
+    static let rootTopPadding: CGFloat = 24
+    static let bottomPadding: CGFloat = 6
+    /// The thread line runs along the parent's avatar edge.
+    static let lineX: CGFloat = 1
     /// Vertical center of the avatar, where the elbow meets the row.
     static let elbowY: CGFloat = avatarSize / 2
 }
@@ -546,7 +342,7 @@ struct CommentRow: View {
     private var topPadding: CGFloat { isReply ? CommentLayout.topPadding : CommentLayout.rootTopPadding }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             header
 
             if comment.hidden == true {
@@ -561,6 +357,9 @@ struct CommentRow: View {
                 imageStrip(images)
             }
 
+            RatingPill(likes: comment.likesCount ?? 0, dislikes: comment.dislikesCount ?? 0)
+                .padding(.top, 2)
+
             actions
         }
         .padding(.leading, CGFloat(line.level) * CommentLayout.indent)
@@ -570,11 +369,11 @@ struct CommentRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(alignment: .topLeading) {
             ThreadLines(line: line, topPadding: topPadding)
-                .stroke(Color(.systemGray3), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                .stroke(Color(.systemGray4), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                 .padding(.leading, CommentLayout.horizontalPadding)
         }
         .background(isHighlighted ? Color.accentColor.opacity(0.14)
-                        : isNew ? Color.accentColor.opacity(0.06) : Color.clear)
+                        : isNew ? Color.accentColor.opacity(0.07) : Color.clear)
     }
 
     private var header: some View {
@@ -582,78 +381,74 @@ struct CommentRow: View {
             AvatarView(name: item.authorName, color: AuthorColor.color(for: comment),
                        isAnonymous: isAnonymous, isBot: comment.isBot == true,
                        size: CommentLayout.avatarSize)
-            nameAndMeta
-        }
-    }
 
-    private var nameAndMeta: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(item.authorName)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                if comment.isBot == true {
-                    Text("БОТ")
-                        .font(.caption2.weight(.bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.accentColor, in: Capsule())
-                }
-                if let parent = comment.parentId {
-                    Button {
-                        onParent(parent)
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 32, height: 28)
-                            .contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item.authorName)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if comment.isBot == true {
+                        Text("БОТ")
+                            .font(.caption2.weight(.bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color(red: 0.81, green: 0.16, blue: 0.34), in: Capsule())
                     }
-                    .buttonStyle(.plain)
-                    .padding(.vertical, -6)
-                    .accessibilityLabel("К родительскому комментарию")
+                    if let parent = comment.parentId {
+                        Button {
+                            onParent(parent)
+                        } label: {
+                            Image(systemName: "arrow.up")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 32, height: 28)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, -6)
+                        .accessibilityLabel("К родительскому комментарию")
+                    }
                 }
-            }
 
-            HStack(spacing: 6) {
-                if isNew {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 7, height: 7)
-                        .accessibilityLabel("Новый")
+                HStack(spacing: 6) {
+                    if isNew {
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 7, height: 7)
+                            .accessibilityLabel("Новый")
+                    }
+                    if let date = comment.createdAt {
+                        Text(DateParsing.relative(date))
+                    }
+                    // Anonymous authors are told apart by their IP hash.
+                    if isAnonymous, let hash = comment.ipHash, !hash.isEmpty {
+                        Text(hash).font(.subheadline.monospaced())
+                    }
+                    if item.depth > CommentLayout.maxLevel, let parent = item.parentName {
+                        Text("· ответ \(parent)").lineLimit(1)
+                    }
                 }
-                if let date = comment.createdAt {
-                    Text(DateParsing.relative(date))
-                }
-                // Anonymous authors are told apart by their IP hash.
-                if isAnonymous, let hash = comment.ipHash, !hash.isEmpty {
-                    Text("·")
-                    Text(hash).font(.subheadline.monospaced())
-                }
-                if item.depth > CommentsModel.maxLevel, let parent = item.parentName {
-                    Text("·")
-                    Text("ответ \(parent)").lineLimit(1)
-                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
         }
     }
 
     private var actions: some View {
-        HStack(spacing: 20) {
-            RatingPill(likes: comment.likesCount ?? 0, dislikes: comment.dislikesCount ?? 0)
-
+        HStack(spacing: 24) {
             if item.descendants > 0 {
                 Button(action: onToggle) {
-                    Text(isCollapsed ? Plural.replies(item.descendants) + (newReplies > 0 ? " · +\(newReplies)" : "")
-                                     : "Свернуть")
-                        .font(.body)
-                        .foregroundColor(.accentColor)
-                        .frame(minHeight: 36)
-                        .contentShape(Rectangle())
+                    HStack(spacing: 6) {
+                        Text(isCollapsed ? Plural.replies(item.descendants) : "Свернуть")
+                        if isCollapsed, newReplies > 0 {
+                            Text("+\(newReplies)").fontWeight(.semibold)
+                        }
+                    }
+                    .foregroundColor(.accentColor)
+                    .frame(minHeight: 40)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -671,12 +466,12 @@ struct CommentRow: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.body.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 40, height: 40)
                     .contentShape(Rectangle())
             }
         }
+        .font(.body)
         .padding(.vertical, -4)
     }
 
@@ -695,7 +490,7 @@ struct CommentRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: 360, alignment: .leading)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
         } else {
@@ -713,7 +508,7 @@ struct CommentRow: View {
                                 }
                             }
                             .frame(width: 180, height: 180)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
                         .buttonStyle(.plain)
                     }
@@ -746,7 +541,7 @@ struct ThreadLines: Shape {
             path.move(to: CGPoint(x: lx, y: 0))
             path.addLine(to: CGPoint(x: lx, y: elbowY - radius))
             path.addQuadCurve(to: CGPoint(x: lx + radius, y: elbowY), control: CGPoint(x: lx, y: elbowY))
-            path.addLine(to: CGPoint(x: CGFloat(level) * indent - 5, y: elbowY))
+            path.addLine(to: CGPoint(x: CGFloat(level) * indent - 3, y: elbowY))
             if line.continues[level] {
                 path.move(to: CGPoint(x: lx, y: elbowY - radius))
                 path.addLine(to: CGPoint(x: lx, y: rect.height))
@@ -754,17 +549,17 @@ struct ThreadLines: Shape {
         }
 
         // Line from this comment down to its first visible reply.
-        if line.hasVisibleChildren, level < CommentsModel.maxLevel {
+        if line.hasVisibleChildren, level < CommentLayout.maxLevel {
             let cx = x(level + 1)
-            path.move(to: CGPoint(x: cx, y: rect.height - CommentLayout.bottomPadding + 2))
+            path.move(to: CGPoint(x: cx, y: rect.height - CommentLayout.bottomPadding))
             path.addLine(to: CGPoint(x: cx, y: rect.height))
         }
         return path
     }
 }
 
-/// Net rating (likes minus dislikes): green when positive, red when negative.
-/// Tapping it shows the breakdown.
+/// Net rating (likes minus dislikes) in a vc-style reaction pill: green when
+/// positive, red when negative. Tapping it shows the breakdown.
 struct RatingPill: View {
     let likes: Int
     let dislikes: Int
@@ -796,9 +591,9 @@ struct RatingPill: View {
                 .font(.body.weight(.semibold))
                 .monospacedDigit()
                 .foregroundColor(color)
-                .padding(.horizontal, 12)
-                .frame(minWidth: 44, minHeight: 32)
-                .background(color.opacity(score == 0 ? 0.12 : 0.15), in: Capsule())
+                .padding(.horizontal, 14)
+                .frame(minWidth: 48, minHeight: 32)
+                .background(Color(.tertiarySystemFill), in: Capsule())
                 .contentShape(Capsule())
         }
         .accessibilityLabel("Рейтинг \(text): нравится \(likes), не нравится \(dislikes)")
