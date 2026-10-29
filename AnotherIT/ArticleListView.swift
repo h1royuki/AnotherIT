@@ -102,6 +102,10 @@ struct ArticleListView: View {
         .navigationBarTitleDisplayMode(.inline)
         // The logo scrolls with the feed instead of occupying a bar.
         .toolbar(model.tag == nil ? .hidden : .automatic, for: .navigationBar)
+        // Without a bar the feed would run straight into the status bar.
+        .overlay(alignment: .top) {
+            if model.tag == nil { StatusBarBlur() }
+        }
         .refreshable { await model.reload() }
         .task {
             if model.articles.isEmpty { await model.reload() }
@@ -390,6 +394,25 @@ struct ArticleCard: View {
         .buttonStyle(.plain)
         .font(.body)
         .foregroundStyle(.primary)
+    }
+}
+
+/// A soft blur under the status bar that fades out below it, like the
+/// system's scroll edge effect under a navigation bar.
+struct StatusBarBlur: View {
+    var body: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .frame(height: 24)
+            // Grows up through the status bar, so the height is inset + 24.
+            .ignoresSafeArea(edges: .top)
+            .mask {
+                LinearGradient(stops: [.init(color: .black, location: 0),
+                                       .init(color: .black, location: 0.55),
+                                       .init(color: .clear, location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+            .allowsHitTesting(false)
     }
 }
 
