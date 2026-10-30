@@ -72,7 +72,7 @@ final class ArticleListModel: ObservableObject {
 /// Feed metrics: full-bleed posts on a plain background.
 enum FeedLayout {
     static let padding: CGFloat = 16
-    static let avatarSize: CGFloat = 44
+    static let avatarSize: CGFloat = 36
     static let chipBackground = Color(.secondarySystemBackground)
 }
 
@@ -131,9 +131,11 @@ struct ArticleListView: View {
         }
     }
 
-    /// App icon and the feed picker (all articles or a tag), centered.
+    /// Wordmark and the feed picker (all articles or a tag).
     private var homeHeader: some View {
-        ZStack {
+        HStack(spacing: 12) {
+            Wordmark()
+            Spacer(minLength: 8)
             Menu {
                 Button {
                     Task { await model.select(nil) }
@@ -161,29 +163,19 @@ struct ArticleListView: View {
             } label: {
                 HStack(spacing: 6) {
                     Text(model.tag?.name ?? "Все статьи")
-                        .font(.title3.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
                 }
                 .foregroundStyle(.primary)
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .padding(.horizontal, 64)
-
-            HStack {
-                Image("Logo")
-                    .resizable()
-                    .frame(width: 36, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .accessibilityLabel("Другое IT")
-                Spacer()
-            }
         }
         .padding(.horizontal, FeedLayout.padding)
-        .padding(.vertical, 6)
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder
@@ -230,9 +222,9 @@ struct PinnedCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             Label("Закреплённое", systemImage: "pin.fill")
-                .font(.subheadline.weight(.semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
 
             ForEach(shown) { article in
@@ -255,34 +247,34 @@ struct PinnedCard: View {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")
                             .font(.subheadline.weight(.semibold))
                     }
-                    .font(.body.weight(.medium))
-                    .frame(minHeight: 32)
+                    .font(.subheadline.weight(.medium))
+                    .frame(minHeight: 28)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(FeedLayout.padding)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(FeedLayout.chipBackground,
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func title(_ article: ArticleSummary) -> Text {
         let newComments = seen.newCount(articleId: article.id, commentCount: article.commentCount)
         let title = Text(article.title)
-            .font(.body.weight(.medium))
+            .font(.subheadline.weight(.medium))
             .foregroundColor(.primary)
         let icon = Text(Image(systemName: "bubble.left"))
-            .font(.subheadline)
+            .font(.footnote)
             .foregroundColor(.secondary)
         let count = Text(" \(article.commentCount ?? 0)")
-            .font(.subheadline)
+            .font(.footnote)
             .foregroundColor(.secondary)
         var text = title + Text("  ") + icon + count
         if newComments > 0 {
             let badge = Text(" +\(newComments)")
-                .font(.subheadline.weight(.semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundColor(.accentColor)
             text = text + badge
         }
@@ -307,10 +299,10 @@ struct FeedPost: View {
         VStack(alignment: .leading, spacing: 0) {
             header
                 .padding(.horizontal, FeedLayout.padding)
-                .padding(.bottom, 12)
+                .padding(.bottom, 10)
 
             Text(article.title)
-                .font(.system(size: 21, weight: .bold))
+                .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, FeedLayout.padding)
@@ -318,12 +310,12 @@ struct FeedPost: View {
 
             if let excerpt = article.excerpt, !excerpt.isEmpty {
                 Text(excerpt)
-                    .font(.body)
+                    .font(.subheadline)
                     .foregroundStyle(.primary)
-                    .lineSpacing(2)
+                    .lineSpacing(1)
                     .lineLimit(4)
                     .padding(.horizontal, FeedLayout.padding)
-                    .padding(.bottom, 10)
+                    .padding(.bottom, 8)
             }
 
             if let tags = article.tags, !tags.isEmpty {
@@ -334,10 +326,10 @@ struct FeedPost: View {
                                 router.push(.tag(tag))
                             } label: {
                                 Text(tag.name)
-                                    .font(.subheadline.weight(.medium))
+                                    .font(.footnote.weight(.medium))
                                     .foregroundStyle(.primary)
-                                    .padding(.horizontal, 14)
-                                    .frame(height: 32)
+                                    .padding(.horizontal, 11)
+                                    .frame(height: 26)
                                     .background(FeedLayout.chipBackground, in: Capsule())
                             }
                             .buttonStyle(.plain)
@@ -345,7 +337,7 @@ struct FeedPost: View {
                     }
                     .padding(.horizontal, FeedLayout.padding)
                 }
-                .padding(.bottom, 12)
+                .padding(.bottom, 10)
             }
 
             if let image = article.featuredImageUrl, let url = URL(string: image) {
@@ -361,14 +353,14 @@ struct FeedPost: View {
                         }
                     )
                     .clipped()
-                    .padding(.bottom, 12)
+                    .padding(.bottom, 8)
             }
 
             actions
                 .padding(.horizontal, FeedLayout.padding)
         }
-        .padding(.top, 16)
-        .padding(.bottom, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 14)
         .contentShape(Rectangle())
         .onTapGesture {
             router.push(.article(path: article.url))
@@ -376,18 +368,18 @@ struct FeedPost: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             AvatarView(name: authorName, color: AuthorColor.color(seed: authorSlug, isBot: isBot),
                        isAnonymous: false, isBot: isBot, size: FeedLayout.avatarSize)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(authorName)
-                    .font(.body.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 if let date = article.publishedAt {
                     Text(DateParsing.relative(date))
-                        .font(.subheadline)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -405,9 +397,9 @@ struct FeedPost: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.body.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 40, height: 40)
                     .contentShape(Rectangle())
             }
             .padding(.trailing, -10)
@@ -428,13 +420,24 @@ struct FeedPost: View {
 
             ShareLink(item: link) {
                 Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 20))
+                    .font(.system(size: 17))
                     .foregroundStyle(.primary)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 40, height: 40)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Поделиться")
         }
+    }
+}
+
+/// The app's wordmark, matching the icon: a light "another" and a heavy
+/// red "IT".
+struct Wordmark: View {
+    var body: some View {
+        (Text("another").font(.system(size: 20, weight: .semibold))
+            + Text("IT").font(.system(size: 20, weight: .black)).foregroundColor(.accentColor))
+            .kerning(-0.3)
+            .accessibilityLabel("AnotherIT")
     }
 }
 

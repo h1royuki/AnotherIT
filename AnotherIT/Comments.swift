@@ -312,11 +312,11 @@ enum Plural {
 /// Comment metrics: compact one-line headers and colored thread bars.
 enum CommentLayout {
     static let maxLevel = 4
-    static let indent: CGFloat = 14
-    static let barWidth: CGFloat = 2.5
-    static let avatarSize: CGFloat = 28
+    static let indent: CGFloat = 12
+    static let barWidth: CGFloat = 2
+    static let avatarSize: CGFloat = 24
     static let horizontalPadding: CGFloat = 16
-    static let verticalPadding: CGFloat = 12
+    static let verticalPadding: CGFloat = 10
     static let barColors: [Color] = [.orange, .blue, .green, .purple, .pink]
 }
 
@@ -342,12 +342,12 @@ struct CommentRow: View {
             if showsSeparator {
                 Divider()
             }
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 header
 
                 if comment.hidden == true {
                     Text(comment.message ?? "Комментарий скрыт")
-                        .font(.body.italic())
+                        .font(.subheadline.italic())
                         .foregroundStyle(.secondary)
                 } else {
                     MessageView(blocks: item.blocks)
@@ -400,13 +400,13 @@ struct CommentRow: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             AvatarView(name: item.authorName, color: AuthorColor.color(for: comment),
                        isAnonymous: isAnonymous, isBot: comment.isBot == true,
                        size: CommentLayout.avatarSize)
 
             Text(item.authorName)
-                .font(.body.weight(.semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .layoutPriority(1)
@@ -423,7 +423,7 @@ struct CommentRow: View {
             HStack(spacing: 5) {
                 // Anonymous authors are told apart by their IP hash.
                 if isAnonymous, let hash = comment.ipHash, !hash.isEmpty {
-                    Text(hash).font(.subheadline.monospaced())
+                    Text(hash).font(.footnote.monospaced())
                 }
                 if let date = comment.createdAt {
                     Text("· \(DateParsing.relative(date))")
@@ -431,11 +431,11 @@ struct CommentRow: View {
                 if isNew {
                     Circle()
                         .fill(Color.accentColor)
-                        .frame(width: 7, height: 7)
+                        .frame(width: 6, height: 6)
                         .accessibilityLabel("Новый")
                 }
             }
-            .font(.subheadline)
+            .font(.footnote)
             .foregroundStyle(.secondary)
             .lineLimit(1)
 
@@ -462,7 +462,7 @@ struct CommentRow: View {
                     Button(action: onToggle) {
                         HStack(spacing: 5) {
                             Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                                .font(.footnote.weight(.semibold))
+                                .font(.caption2.weight(.bold))
                             Text(isCollapsed ? Plural.replies(item.descendants) : "Свернуть")
                             if isCollapsed, newReplies > 0 {
                                 Text("+\(newReplies)")
@@ -470,13 +470,13 @@ struct CommentRow: View {
                                     .foregroundColor(.accentColor)
                             }
                         }
-                        .frame(minHeight: 32)
+                        .frame(minHeight: 30)
                         .contentShape(Rectangle())
                     }
                 }
             }
             .buttonStyle(.plain)
-            .font(.subheadline)
+            .font(.footnote)
             .foregroundStyle(.secondary)
             .padding(.vertical, -4)
         }
@@ -554,19 +554,19 @@ struct RatingControl: View {
                 Label("Не нравится: \(dislikes)", systemImage: "arrowshape.down")
             }
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: "arrowshape.up")
                     .foregroundStyle(.secondary)
                 Text(text)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.footnote.weight(.semibold))
                     .monospacedDigit()
                     .foregroundColor(color)
-                    .frame(minWidth: 22)
+                    .frame(minWidth: 20)
                 Image(systemName: "arrowshape.down")
                     .foregroundStyle(.secondary)
             }
-            .font(.subheadline)
-            .frame(minHeight: 32)
+            .font(.footnote)
+            .frame(minHeight: 30)
             .contentShape(Rectangle())
         }
         .accessibilityLabel("Рейтинг \(text): нравится \(likes), не нравится \(dislikes)")

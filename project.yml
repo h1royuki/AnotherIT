@@ -17,7 +17,7 @@ targets:
     info:
       path: AnotherIT/Info.plist
       properties:
-        CFBundleDisplayName: Другое IT
+        CFBundleDisplayName: AnotherIT
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false

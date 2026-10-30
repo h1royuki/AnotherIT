@@ -141,7 +141,7 @@ struct MessageView: View {
     let blocks: [MessageBlock]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .paragraph(let text):
@@ -154,7 +154,7 @@ struct MessageView: View {
                             .fill(Color.accentColor)
                             .frame(width: 3)
                         Text(text)
-                            .font(.subheadline)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 2)
                     }
@@ -171,15 +171,15 @@ struct MessageView: View {
                 case .code(let code):
                     ScrollView(.horizontal, showsIndicators: false) {
                         Text(code)
-                            .font(.system(.footnote, design: .monospaced))
+                            .font(.system(.caption, design: .monospaced))
                             .padding(10)
                     }
                     .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
         }
-        .font(.body)
-        .lineSpacing(2)
+        .font(.subheadline)
+        .lineSpacing(1.5)
         .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
     }

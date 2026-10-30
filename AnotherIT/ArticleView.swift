@@ -189,8 +189,8 @@ struct ArticleView: View {
 
             ShareLink(item: SiteLinks.absolute(article.url)) {
                 Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 20))
-                    .frame(width: 44, height: 44)
+                    .font(.system(size: 17))
+                    .frame(width: 40, height: 40)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Поделиться")
@@ -205,9 +205,9 @@ struct ArticleView: View {
     private func commentsHeader(_ article: Article) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("Комментарии")
-                .font(.title2.weight(.bold))
+                .font(.title3.weight(.bold))
             Text("\(comments.loaded ? comments.totalCount : article.commentCount ?? 0)")
-                .font(.title2.weight(.bold))
+                .font(.title3.weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
             Spacer()
@@ -230,9 +230,9 @@ struct ArticleView: View {
                 }
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.accentColor)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 30, height: 30)
                     .overlay(Circle().strokeBorder(Color.accentColor, lineWidth: 1.5))
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -240,8 +240,8 @@ struct ArticleView: View {
             .accessibilityLabel("Сортировка комментариев: \(comments.sort.rawValue)")
         }
         .padding(.horizontal, 16)
-        .padding(.top, 24)
-        .padding(.bottom, 4)
+        .padding(.top, 18)
+        .padding(.bottom, 2)
     }
 
     @ViewBuilder
@@ -291,7 +291,7 @@ struct ArticleView: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "bubble.left")
-                    .font(.system(size: 19, weight: .medium))
+                    .font(.system(size: 15, weight: .semibold))
                 Text("\(article.commentCount ?? 0)")
                     .monospacedDigit()
                 if newComments > 0 {
@@ -300,9 +300,9 @@ struct ArticleView: View {
                         .foregroundColor(.accentColor)
                 }
             }
-            .font(.body.weight(.semibold))
-            .padding(.horizontal, 22)
-            .frame(minHeight: 48)
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 18)
+            .frame(minHeight: 42)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -321,11 +321,11 @@ struct ArticleView: View {
                 Text(comments.remainingNew > 0
                      ? Plural.newComments(comments.remainingNew)
                      : "Все новые просмотрены")
-                    .font(.body.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .monospacedDigit()
-                    .padding(.leading, 20)
-                    .padding(.trailing, 8)
-                    .frame(minHeight: 48)
+                    .padding(.leading, 18)
+                    .padding(.trailing, 6)
+                    .frame(minHeight: 42)
                     .contentShape(Rectangle())
             }
             .accessibilityHint("Перейти к следующему новому комментарию")
@@ -334,9 +334,9 @@ struct ArticleView: View {
                 withAnimation { comments.markAllSeen(clearHighlights: true) }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.body.weight(.semibold))
+                    .font(.footnote.weight(.bold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 48)
+                    .frame(width: 40, height: 42)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Отметить все прочитанными")
@@ -580,29 +580,29 @@ enum ArticleHTML {
     :root { color-scheme: light dark; --text: #000; --accent: #ce2956; --muted: #8a8a8e; --border: rgba(127,127,127,.25); --fill: rgba(118,118,128,.12); }
     @media (prefers-color-scheme: dark) { :root { --text: #fff; --accent: #ff4f7b; --muted: #98989f; --fill: rgba(118,118,128,.24); } }
     html { -webkit-text-size-adjust: 100%; background: transparent; }
-    body { margin: 0; padding: 12px 16px 4px; background: transparent; color: var(--text); font-family: -apple-system, system-ui, sans-serif; font-size: 17px; line-height: 1.5; word-wrap: break-word; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+    body { margin: 0; padding: 10px 16px 4px; background: transparent; color: var(--text); font-family: -apple-system, system-ui, sans-serif; font-size: 16px; line-height: 1.5; word-wrap: break-word; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
     a { color: var(--accent); text-decoration: none; }
-    .author { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
-    .avatar { flex: none; width: 44px; height: 44px; border-radius: 50%; color: #fff; font: 600 18px/44px ui-rounded, -apple-system, sans-serif; text-align: center; background-image: linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,0)); }
-    .name { font-size: 17px; font-weight: 600; line-height: 1.3; }
-    .sub { font-size: 15px; line-height: 1.35; color: var(--muted); }
-    h1 { font-size: 24px; line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 12px; }
-    .tags { display: flex; gap: 8px; overflow-x: auto; margin: 0 -16px 14px; padding: 0 16px; scrollbar-width: none; }
+    .author { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+    .avatar { flex: none; width: 36px; height: 36px; border-radius: 50%; color: #fff; font: 600 15px/36px ui-rounded, -apple-system, sans-serif; text-align: center; background-image: linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,0)); }
+    .name { font-size: 15px; font-weight: 600; line-height: 1.3; }
+    .sub { font-size: 13px; line-height: 1.35; color: var(--muted); }
+    h1 { font-size: 21px; line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 10px; }
+    .tags { display: flex; gap: 6px; overflow-x: auto; margin: 0 -16px 12px; padding: 0 16px; scrollbar-width: none; }
     .tags::-webkit-scrollbar { display: none; }
-    .tag { flex: none; padding: 6px 14px; border-radius: 999px; background: var(--fill); color: var(--text); font-size: 15px; font-weight: 500; white-space: nowrap; }
-    .lead { font-size: 17px; line-height: 1.45; margin: 0 0 14px; }
+    .tag { flex: none; padding: 5px 11px; border-radius: 999px; background: var(--fill); color: var(--text); font-size: 13px; font-weight: 500; white-space: nowrap; }
+    .lead { font-size: 16px; line-height: 1.45; margin: 0 0 12px; }
     .cover, .content img, .content video, .content iframe { display: block; width: calc(100% + 32px); max-width: none; height: auto; margin: 12px -16px; border-radius: 0; }
     .content { margin-top: 16px; }
     .content > :first-child { margin-top: 0; }
     p { margin: 0 0 14px; }
-    h2 { font-size: 21px; line-height: 1.3; margin: 28px 0 10px; }
-    h3, h4 { font-size: 19px; line-height: 1.3; margin: 24px 0 8px; }
+    h2 { font-size: 19px; line-height: 1.3; margin: 24px 0 8px; }
+    h3, h4 { font-size: 17px; line-height: 1.3; margin: 20px 0 6px; }
     strong, b { font-weight: 600; }
     ul, ol { padding-left: 24px; margin: 0 0 14px; }
     li { margin-bottom: 8px; }
     li::marker { color: var(--muted); }
     figure { margin: 20px 0; }
-    figcaption { color: var(--muted); font-size: 15px; margin-top: 8px; }
+    figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
     blockquote { margin: 18px 0; padding: 2px 0 2px 14px; border-left: 3px solid var(--accent); }
     pre { background: var(--fill); padding: 14px; border-radius: 12px; overflow-x: auto; font-size: 14px; line-height: 1.45; }
     code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; background: var(--fill); padding: 2px 5px; border-radius: 5px; }
@@ -610,7 +610,7 @@ enum ArticleHTML {
     table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 15px; }
     th, td { border: 1px solid var(--border); padding: 6px 8px; }
     hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
-    .note { margin: 16px 0; padding: 14px 16px; border-radius: 14px; background: var(--fill); font-size: 16px; }
+    .note { margin: 14px 0; padding: 12px 14px; border-radius: 12px; background: var(--fill); font-size: 15px; }
     """
 }
 
@@ -621,9 +621,9 @@ struct CounterPill: View {
     var extra: Int = 0
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: systemImage)
-                .font(.system(size: 18, weight: .medium))
+                .font(.system(size: 14, weight: .semibold))
             Text("\(count)")
                 .monospacedDigit()
             if extra > 0 {
@@ -632,10 +632,10 @@ struct CounterPill: View {
                     .foregroundColor(.accentColor)
             }
         }
-        .font(.body.weight(.semibold))
+        .font(.subheadline.weight(.semibold))
         .foregroundStyle(.primary)
-        .padding(.horizontal, 16)
-        .frame(height: 40)
+        .padding(.horizontal, 13)
+        .frame(height: 32)
         .background(Color(.secondarySystemBackground), in: Capsule())
         .contentShape(Capsule())
     }
