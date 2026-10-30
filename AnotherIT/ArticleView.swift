@@ -613,3 +613,30 @@ enum ArticleHTML {
     .note { margin: 16px 0; padding: 14px 16px; border-radius: 14px; background: var(--fill); font-size: 16px; }
     """
 }
+
+/// Rounded counter used under posts: icon, count and an optional "+N".
+struct CounterPill: View {
+    let systemImage: String
+    let count: Int
+    var extra: Int = 0
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .medium))
+            Text("\(count)")
+                .monospacedDigit()
+            if extra > 0 {
+                Text("+\(extra)")
+                    .monospacedDigit()
+                    .foregroundColor(.accentColor)
+            }
+        }
+        .font(.body.weight(.semibold))
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 16)
+        .frame(height: 40)
+        .background(Color(.secondarySystemBackground), in: Capsule())
+        .contentShape(Capsule())
+    }
+}
