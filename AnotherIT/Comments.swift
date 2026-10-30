@@ -309,23 +309,20 @@ enum Plural {
     }
 }
 
-/// Comment metrics, taken from vc.ru's comment layout.
+/// Comment metrics: compact one-line headers and colored thread bars.
 enum CommentLayout {
-    static let maxLevel = 3
-    static let indent: CGFloat = 20
-    static let avatarSize: CGFloat = 36
+    static let maxLevel = 4
+    static let indent: CGFloat = 14
+    static let barWidth: CGFloat = 2.5
+    static let avatarSize: CGFloat = 28
     static let horizontalPadding: CGFloat = 16
-    static let topPadding: CGFloat = 16
-    static let rootTopPadding: CGFloat = 24
-    static let bottomPadding: CGFloat = 6
-    /// The thread line runs along the parent's avatar edge.
-    static let lineX: CGFloat = 1
-    /// Vertical center of the avatar, where the elbow meets the row.
-    static let elbowY: CGFloat = avatarSize / 2
+    static let verticalPadding: CGFloat = 12
+    static let barColors: [Color] = [.orange, .blue, .green, .purple, .pink]
 }
 
 struct CommentRow: View {
     let line: CommentLine
+    let showsSeparator: Bool
     let isCollapsed: Bool
     let isHighlighted: Bool
     let isNew: Bool
@@ -337,142 +334,152 @@ struct CommentRow: View {
 
     private var item: FlatComment { line.item }
     private var comment: Comment { item.comment }
-    private var isReply: Bool { item.depth > 0 }
     private var isAnonymous: Bool { comment.name?.trimmingCharacters(in: .whitespaces).isEmpty ?? true }
-    private var topPadding: CGFloat { isReply ? CommentLayout.topPadding : CommentLayout.rootTopPadding }
+    private var contentInset: CGFloat { CGFloat(line.level) * CommentLayout.indent }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-
-            if comment.hidden == true {
-                Text(comment.message ?? "Комментарий скрыт")
-                    .font(.body.italic())
-                    .foregroundStyle(.secondary)
-            } else {
-                MessageView(blocks: item.blocks)
+        VStack(alignment: .leading, spacing: 0) {
+            if showsSeparator {
+                Divider()
             }
+            VStack(alignment: .leading, spacing: 8) {
+                header
 
-            if let images = comment.images, !images.isEmpty {
-                imageStrip(images)
+                if comment.hidden == true {
+                    Text(comment.message ?? "Комментарий скрыт")
+                        .font(.body.italic())
+                        .foregroundStyle(.secondary)
+                } else {
+                    MessageView(blocks: item.blocks)
+                }
+
+                if let images = comment.images, !images.isEmpty {
+                    imageStrip(images)
+                }
+
+                footer
             }
-
-            RatingPill(likes: comment.likesCount ?? 0, dislikes: comment.dislikesCount ?? 0)
-                .padding(.top, 2)
-
-            actions
+            .padding(.vertical, CommentLayout.verticalPadding)
         }
-        .padding(.leading, CGFloat(line.level) * CommentLayout.indent)
-        .padding(.top, topPadding)
-        .padding(.bottom, CommentLayout.bottomPadding)
+        .padding(.leading, contentInset)
+        .background(alignment: .leading) {
+            // One colored bar per nesting level; consecutive rows join up
+            // into continuous thread lines.
+            HStack(spacing: CommentLayout.indent - CommentLayout.barWidth) {
+                ForEach(0..<line.level, id: \.self) { k in
+                    Rectangle()
+                        .fill(CommentLayout.barColors[k % CommentLayout.barColors.count].opacity(0.85))
+                        .frame(width: CommentLayout.barWidth)
+                }
+            }
+        }
         .padding(.horizontal, CommentLayout.horizontalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(alignment: .topLeading) {
-            ThreadLines(line: line, topPadding: topPadding)
-                .stroke(Color(.systemGray4), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                .padding(.leading, CommentLayout.horizontalPadding)
+        .background(isHighlighted ? Color.accentColor.opacity(0.16)
+                        : isNew ? Color.accentColor.opacity(0.08) : Color.clear)
+        .contentShape(Rectangle())
+        .contextMenu {
+            if let message = comment.message, !message.isEmpty {
+                Button {
+                    UIPasteboard.general.string = message
+                } label: {
+                    Label("Скопировать текст", systemImage: "doc.on.doc")
+                }
+            }
+            ShareLink(item: commentURL) {
+                Label("Поделиться ссылкой", systemImage: "square.and.arrow.up")
+            }
+            if let parent = comment.parentId {
+                Button {
+                    onParent(parent)
+                } label: {
+                    Label("К родительскому комментарию", systemImage: "arrow.turn.left.up")
+                }
+            }
         }
-        .background(isHighlighted ? Color.accentColor.opacity(0.14)
-                        : isNew ? Color.accentColor.opacity(0.07) : Color.clear)
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             AvatarView(name: item.authorName, color: AuthorColor.color(for: comment),
                        isAnonymous: isAnonymous, isBot: comment.isBot == true,
                        size: CommentLayout.avatarSize)
 
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(item.authorName)
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    if comment.isBot == true {
-                        Text("БОТ")
-                            .font(.caption2.weight(.bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Color(red: 0.81, green: 0.16, blue: 0.34), in: Capsule())
-                    }
-                    if let parent = comment.parentId {
-                        Button {
-                            onParent(parent)
-                        } label: {
-                            Image(systemName: "arrow.up")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 32, height: 28)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.vertical, -6)
-                        .accessibilityLabel("К родительскому комментарию")
-                    }
-                }
+            Text(item.authorName)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .layoutPriority(1)
 
-                HStack(spacing: 6) {
-                    if isNew {
-                        Circle()
-                            .fill(Color.accentColor)
-                            .frame(width: 7, height: 7)
-                            .accessibilityLabel("Новый")
-                    }
-                    if let date = comment.createdAt {
-                        Text(DateParsing.relative(date))
-                    }
-                    // Anonymous authors are told apart by their IP hash.
-                    if isAnonymous, let hash = comment.ipHash, !hash.isEmpty {
-                        Text(hash).font(.subheadline.monospaced())
-                    }
-                    if item.depth > CommentLayout.maxLevel, let parent = item.parentName {
-                        Text("· ответ \(parent)").lineLimit(1)
-                    }
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            if comment.isBot == true {
+                Text("БОТ")
+                    .font(.caption2.weight(.bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.accentColor, in: Capsule())
             }
+
+            HStack(spacing: 5) {
+                // Anonymous authors are told apart by their IP hash.
+                if isAnonymous, let hash = comment.ipHash, !hash.isEmpty {
+                    Text(hash).font(.subheadline.monospaced())
+                }
+                if let date = comment.createdAt {
+                    Text("· \(DateParsing.relative(date))")
+                }
+                if isNew {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 7, height: 7)
+                        .accessibilityLabel("Новый")
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+
+            Spacer(minLength: 4)
+
+            RatingControl(likes: comment.likesCount ?? 0, dislikes: comment.dislikesCount ?? 0)
         }
     }
 
-    private var actions: some View {
-        HStack(spacing: 24) {
-            if item.descendants > 0 {
-                Button(action: onToggle) {
-                    HStack(spacing: 6) {
-                        Text(isCollapsed ? Plural.replies(item.descendants) : "Свернуть")
-                        if isCollapsed, newReplies > 0 {
-                            Text("+\(newReplies)").fontWeight(.semibold)
-                        }
-                    }
-                    .foregroundColor(.accentColor)
-                    .frame(minHeight: 40)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-
-            Menu {
-                if let message = comment.message, !message.isEmpty {
+    @ViewBuilder
+    private var footer: some View {
+        let deepParent = item.depth > CommentLayout.maxLevel ? comment.parentId : nil
+        if item.descendants > 0 || deepParent != nil {
+            HStack(spacing: 20) {
+                if let parent = deepParent {
                     Button {
-                        UIPasteboard.general.string = message
+                        onParent(parent)
                     } label: {
-                        Label("Скопировать текст", systemImage: "doc.on.doc")
+                        Label(item.parentName ?? "Ответ", systemImage: "arrow.turn.left.up")
+                            .lineLimit(1)
                     }
                 }
-                ShareLink(item: commentURL) {
-                    Label("Поделиться ссылкой", systemImage: "square.and.arrow.up")
+                if item.descendants > 0 {
+                    Button(action: onToggle) {
+                        HStack(spacing: 5) {
+                            Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                                .font(.footnote.weight(.semibold))
+                            Text(isCollapsed ? Plural.replies(item.descendants) : "Свернуть")
+                            if isCollapsed, newReplies > 0 {
+                                Text("+\(newReplies)")
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.accentColor)
+                            }
+                        }
+                        .frame(minHeight: 32)
+                        .contentShape(Rectangle())
+                    }
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 40, height: 40)
-                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, -4)
         }
-        .font(.body)
-        .padding(.vertical, -4)
     }
 
     @ViewBuilder
@@ -518,49 +525,9 @@ struct CommentRow: View {
     }
 }
 
-/// Draws the thread guides to the left of a reply: straight lines for the
-/// ancestor levels that continue, and a rounded elbow into this comment.
-struct ThreadLines: Shape {
-    let line: CommentLine
-    let topPadding: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let indent = CommentLayout.indent
-        func x(_ level: Int) -> CGFloat { CGFloat(level - 1) * indent + CommentLayout.lineX }
-
-        let level = line.level
-        if level >= 1 {
-            for k in 1..<level where line.continues[k] {
-                path.move(to: CGPoint(x: x(k), y: 0))
-                path.addLine(to: CGPoint(x: x(k), y: rect.height))
-            }
-            let lx = x(level)
-            let elbowY = topPadding + CommentLayout.elbowY
-            let radius: CGFloat = 10
-            path.move(to: CGPoint(x: lx, y: 0))
-            path.addLine(to: CGPoint(x: lx, y: elbowY - radius))
-            path.addQuadCurve(to: CGPoint(x: lx + radius, y: elbowY), control: CGPoint(x: lx, y: elbowY))
-            path.addLine(to: CGPoint(x: CGFloat(level) * indent - 3, y: elbowY))
-            if line.continues[level] {
-                path.move(to: CGPoint(x: lx, y: elbowY - radius))
-                path.addLine(to: CGPoint(x: lx, y: rect.height))
-            }
-        }
-
-        // Line from this comment down to its first visible reply.
-        if line.hasVisibleChildren, level < CommentLayout.maxLevel {
-            let cx = x(level + 1)
-            path.move(to: CGPoint(x: cx, y: rect.height - CommentLayout.bottomPadding))
-            path.addLine(to: CGPoint(x: cx, y: rect.height))
-        }
-        return path
-    }
-}
-
-/// Net rating (likes minus dislikes) in a vc-style reaction pill: green when
+/// Net rating (likes minus dislikes) between up and down arrows: green when
 /// positive, red when negative. Tapping it shows the breakdown.
-struct RatingPill: View {
+struct RatingControl: View {
     let likes: Int
     let dislikes: Int
 
@@ -575,26 +542,32 @@ struct RatingPill: View {
     private var color: Color {
         if score > 0 { return Color(.systemGreen) }
         if score < 0 { return Color(.systemRed) }
-        return Color(.secondaryLabel)
+        return .primary
     }
 
     var body: some View {
         Menu {
             Button {} label: {
-                Label("Нравится: \(likes)", systemImage: "hand.thumbsup")
+                Label("Нравится: \(likes)", systemImage: "arrowshape.up")
             }
             Button {} label: {
-                Label("Не нравится: \(dislikes)", systemImage: "hand.thumbsdown")
+                Label("Не нравится: \(dislikes)", systemImage: "arrowshape.down")
             }
         } label: {
-            Text(text)
-                .font(.body.weight(.semibold))
-                .monospacedDigit()
-                .foregroundColor(color)
-                .padding(.horizontal, 14)
-                .frame(minWidth: 48, minHeight: 32)
-                .background(Color(.tertiarySystemFill), in: Capsule())
-                .contentShape(Capsule())
+            HStack(spacing: 10) {
+                Image(systemName: "arrowshape.up")
+                    .foregroundStyle(.secondary)
+                Text(text)
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundColor(color)
+                    .frame(minWidth: 22)
+                Image(systemName: "arrowshape.down")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.subheadline)
+            .frame(minHeight: 32)
+            .contentShape(Rectangle())
         }
         .accessibilityLabel("Рейтинг \(text): нравится \(likes), не нравится \(dislikes)")
     }

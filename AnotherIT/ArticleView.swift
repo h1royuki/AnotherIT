@@ -61,7 +61,7 @@ struct ArticleView: View {
             }
         }
         .background(Color(.systemBackground))
-        .navigationTitle("")
+        .navigationTitle("Статья")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar }
         .fullScreenCover(item: $viewerImage) { image in
@@ -87,18 +87,7 @@ struct ArticleView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         if let article = model.article {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Menu {
-                    Picker("Сортировка комментариев", selection: $comments.sort) {
-                        ForEach(CommentSort.allCases) { sort in
-                            Label(sort.rawValue, systemImage: sort.icon).tag(sort)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease")
-                }
-                .accessibilityLabel("Сортировка комментариев")
-
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     ShareLink(item: SiteLinks.absolute(article.url)) {
                         Label("Поделиться", systemImage: "square.and.arrow.up")
@@ -112,17 +101,6 @@ struct ArticleView: View {
                         openURL(SiteLinks.absolute(article.url))
                     } label: {
                         Label("Открыть в Safari", systemImage: "safari")
-                    }
-                    Divider()
-                    Button {
-                        withAnimation { comments.collapseAll() }
-                    } label: {
-                        Label("Свернуть все ветки", systemImage: "rectangle.compress.vertical")
-                    }
-                    Button {
-                        withAnimation { comments.collapsed = [] }
-                    } label: {
-                        Label("Развернуть все ветки", systemImage: "rectangle.expand.vertical")
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -147,6 +125,8 @@ struct ArticleView: View {
                     }
 
                     actionRow(article, proxy: proxy)
+
+                    commentsHeader(article)
                         .id(Self.commentsAnchor)
 
                     commentsSection(proxy: proxy)
@@ -192,45 +172,76 @@ struct ArticleView: View {
         }
     }
 
-    /// vc-style counters under the article text.
+    /// Counters under the article text: a comments pill and sharing.
     private func actionRow(_ article: Article, proxy: ScrollViewProxy) -> some View {
         let newComments = comments.loaded
             ? comments.newIds.count
             : seen.newCount(articleId: article.id, commentCount: article.commentCount)
-        return HStack(spacing: 28) {
+        return HStack(spacing: 12) {
             Button {
                 withAnimation { proxy.scrollTo(Self.commentsAnchor, anchor: .top) }
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "bubble.left")
-                        .font(.system(size: 21))
-                    Text("\(article.commentCount ?? 0)").monospacedDigit()
-                    if newComments > 0 {
-                        Text("+\(newComments)")
-                            .monospacedDigit()
-                            .foregroundColor(.accentColor)
-                    }
-                }
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
+                CounterPill(systemImage: "bubble.left", count: article.commentCount ?? 0, extra: newComments)
             }
             .accessibilityLabel("Комментарии: \(article.commentCount ?? 0)")
 
+            Spacer()
+
             ShareLink(item: SiteLinks.absolute(article.url)) {
-                Image(systemName: "arrowshape.turn.up.right")
-                    .font(.system(size: 21))
-                    .frame(minWidth: 32, minHeight: 44)
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 20))
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Поделиться")
-
-            Spacer()
         }
         .buttonStyle(.plain)
-        .font(.body)
         .foregroundStyle(.primary)
         .padding(.horizontal, 16)
-        .padding(.top, 4)
+        .padding(.top, 8)
+    }
+
+    /// "Комментарии N" with the sort menu, as a section title.
+    private func commentsHeader(_ article: Article) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("Комментарии")
+                .font(.title2.weight(.bold))
+            Text("\(comments.loaded ? comments.totalCount : article.commentCount ?? 0)")
+                .font(.title2.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Spacer()
+            Menu {
+                Picker("Сортировка", selection: $comments.sort) {
+                    ForEach(CommentSort.allCases) { sort in
+                        Label(sort.rawValue, systemImage: sort.icon).tag(sort)
+                    }
+                }
+                Divider()
+                Button {
+                    withAnimation { comments.collapseAll() }
+                } label: {
+                    Label("Свернуть все ветки", systemImage: "rectangle.compress.vertical")
+                }
+                Button {
+                    withAnimation { comments.collapsed = [] }
+                } label: {
+                    Label("Развернуть все ветки", systemImage: "rectangle.expand.vertical")
+                }
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.accentColor)
+                    .frame(width: 34, height: 34)
+                    .overlay(Circle().strokeBorder(Color.accentColor, lineWidth: 1.5))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Сортировка комментариев: \(comments.sort.rawValue)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 24)
+        .padding(.bottom, 4)
     }
 
     @ViewBuilder
@@ -251,9 +262,11 @@ struct ArticleView: View {
                 .foregroundStyle(.secondary)
                 .padding(16)
         } else {
+            let firstId = comments.sortedThreads.first?.id
             ForEach(comments.sortedThreads) { thread in
                 ForEach(comments.lines(for: thread)) { line in
                     CommentRow(line: line,
+                               showsSeparator: line.id != firstId,
                                isCollapsed: comments.collapsed.contains(line.id),
                                isHighlighted: highlighted == line.id,
                                isNew: comments.newIds.contains(line.id),
@@ -510,34 +523,26 @@ enum ArticleHTML {
         let initial = isBot ? "✨" : escape(String(authorName.prefix(1)).uppercased())
         let avatarColor = AuthorColor.hex(seed: authorSlug, isBot: isBot)
 
-        var sub: [String] = []
-        if let tag = article.tags?.first {
-            sub.append("<a href=\"\(scheme)://tag/\(escape(tag.slug))\">\(escape(tag.name))</a>")
-        }
-        if let date = article.publishedAt {
-            sub.append("<span>\(escape(DateParsing.short(date)))</span>")
-        }
+        let date = article.publishedAt.map { escape(DateParsing.relative($0)) } ?? ""
 
         var header = """
         <header class="author">
         <div class="avatar" style="background-color: \(avatarColor)">\(initial)</div>
-        <div><div class="name">\(escape(authorName))</div><div class="sub">\(sub.joined())</div></div>
+        <div><div class="name">\(escape(authorName))</div><div class="sub">\(date)</div></div>
         </header>
         <h1>\(escape(article.title))</h1>
         """
+        if let tags = article.tags, !tags.isEmpty {
+            let links = tags.map {
+                "<a class=\"tag\" href=\"\(scheme)://tag/\(escape($0.slug))\">\(escape($0.name))</a>"
+            }
+            header += "<div class=\"tags\">\(links.joined())</div>"
+        }
         if let excerpt = article.excerpt, !excerpt.isEmpty {
             header += "<p class=\"lead\">\(escape(excerpt))</p>"
         }
         if let image = article.featuredImageUrl {
             header += "<img class=\"cover\" src=\"\(escape(image))\" alt=\"\">"
-        }
-
-        var footer = ""
-        if let tags = article.tags, !tags.isEmpty {
-            let links = tags.map {
-                "<a class=\"tag\" href=\"\(scheme)://tag/\(escape($0.slug))\">#\(escape($0.name))</a>"
-            }
-            footer += "<div class=\"tags\">\(links.joined())</div>"
         }
 
         let pollNote = "<div class=\"note\">Здесь на сайте встроен интерактивный опрос — "
@@ -557,7 +562,6 @@ enum ArticleHTML {
         <article>
         \(header)
         <div class="content">\(content)</div>
-        \(footer)
         </article>
         </body>
         </html>
@@ -571,23 +575,24 @@ enum ArticleHTML {
             .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
-    /// Sizes follow vc.ru's article page; colors follow the system palette.
+    /// Dark-first reading layout: full-bleed media, chip tags, system colors.
     private static let css = """
-    :root { color-scheme: light dark; --text: #000; --accent: #007aff; --muted: #8a8a8e; --border: rgba(127,127,127,.25); --fill: rgba(118,118,128,.12); }
-    @media (prefers-color-scheme: dark) { :root { --text: #fff; --accent: #0a84ff; --muted: #98989f; --fill: rgba(118,118,128,.24); } }
+    :root { color-scheme: light dark; --text: #000; --accent: #ce2956; --muted: #8a8a8e; --border: rgba(127,127,127,.25); --fill: rgba(118,118,128,.12); }
+    @media (prefers-color-scheme: dark) { :root { --text: #fff; --accent: #ff4f7b; --muted: #98989f; --fill: rgba(118,118,128,.24); } }
     html { -webkit-text-size-adjust: 100%; background: transparent; }
-    body { margin: 0; padding: 12px 16px 8px; background: transparent; color: var(--text); font-family: -apple-system, system-ui, sans-serif; font-size: 17px; line-height: 1.5; word-wrap: break-word; -webkit-tap-highlight-color: transparent; }
+    body { margin: 0; padding: 12px 16px 4px; background: transparent; color: var(--text); font-family: -apple-system, system-ui, sans-serif; font-size: 17px; line-height: 1.5; word-wrap: break-word; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
     a { color: var(--accent); text-decoration: none; }
-    .author { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; }
-    .avatar { flex: none; width: 40px; height: 40px; border-radius: 50%; color: #fff; font: 600 17px/40px ui-rounded, -apple-system, sans-serif; text-align: center; background-image: linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,0)); }
-    .name { font-size: 17px; font-weight: 500; line-height: 1.3; }
+    .author { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
+    .avatar { flex: none; width: 44px; height: 44px; border-radius: 50%; color: #fff; font: 600 18px/44px ui-rounded, -apple-system, sans-serif; text-align: center; background-image: linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,0)); }
+    .name { font-size: 17px; font-weight: 600; line-height: 1.3; }
     .sub { font-size: 15px; line-height: 1.35; color: var(--muted); }
-    .sub > * { margin-right: 10px; }
-    .sub a { color: var(--text); }
-    h1 { font-size: 24px; line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 8px; }
-    .lead { font-size: 17px; line-height: 1.45; margin: 0 0 16px; }
-    .cover { display: block; width: 100%; margin: 8px 0 4px; border-radius: 14px; }
-    .content { margin-top: 18px; }
+    h1 { font-size: 24px; line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 12px; }
+    .tags { display: flex; gap: 8px; overflow-x: auto; margin: 0 -16px 14px; padding: 0 16px; scrollbar-width: none; }
+    .tags::-webkit-scrollbar { display: none; }
+    .tag { flex: none; padding: 6px 14px; border-radius: 999px; background: var(--fill); color: var(--text); font-size: 15px; font-weight: 500; white-space: nowrap; }
+    .lead { font-size: 17px; line-height: 1.45; margin: 0 0 14px; }
+    .cover, .content img, .content video, .content iframe { display: block; width: calc(100% + 32px); max-width: none; height: auto; margin: 12px -16px; border-radius: 0; }
+    .content { margin-top: 16px; }
     .content > :first-child { margin-top: 0; }
     p { margin: 0 0 14px; }
     h2 { font-size: 21px; line-height: 1.3; margin: 28px 0 10px; }
@@ -596,7 +601,6 @@ enum ArticleHTML {
     ul, ol { padding-left: 24px; margin: 0 0 14px; }
     li { margin-bottom: 8px; }
     li::marker { color: var(--muted); }
-    img, video, iframe { max-width: 100%; height: auto; border-radius: 14px; }
     figure { margin: 20px 0; }
     figcaption { color: var(--muted); font-size: 15px; margin-top: 8px; }
     blockquote { margin: 18px 0; padding: 2px 0 2px 14px; border-left: 3px solid var(--accent); }
@@ -607,7 +611,5 @@ enum ArticleHTML {
     th, td { border: 1px solid var(--border); padding: 6px 8px; }
     hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
     .note { margin: 16px 0; padding: 14px 16px; border-radius: 14px; background: var(--fill); font-size: 16px; }
-    .tags { margin: 22px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
-    .tag { padding: 6px 12px; border-radius: 999px; background: var(--fill); color: var(--text); font-size: 15px; }
     """
 }
